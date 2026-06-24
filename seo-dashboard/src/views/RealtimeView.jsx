@@ -70,7 +70,7 @@ export default function RealtimeView({ realtime, onRefresh, todayData = [] }) {
       </div>
 
       {/* ═══════════════ STREAMING AREA CHART ═══════════════ */}
-      <RealtimeAreaChart baseValue={Math.max(5, Math.round(totalActive / 30))} />
+      <RealtimeAreaChart currentValue={totalActive} />
 
       {/* ═══════════════ LIVE PAGES TABLE ═══════════════ */}
       <div className="rounded-xl border p-5" style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}>

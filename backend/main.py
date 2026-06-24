@@ -56,10 +56,49 @@ def root():
 @app.get("/api/realtime")
 def get_realtime():
     """
-    Live data for the landing page — active users RIGHT NOW.
-    Always fetched fresh (not cached).
+    Live data — active users RIGHT NOW.
+    Also stores per-minute history so the chart works even after page reload.
     """
-    return fetch_realtime_data()
+    data = fetch_realtime_data()
+    # Log this value to the per-minute history
+    _log_realtime_value(data.get("totalActive", 0))
+    return data
+
+
+@app.get("/api/realtime/history")
+def get_realtime_history():
+    """
+    Returns the last 60 per-minute realtime values.
+    Stored server-side so the chart shows real data even after page reload.
+    """
+    return {"history": _get_realtime_history()}
+
+
+# ─── Per-minute realtime history (in-memory log) ──────────────────────────────
+_realtime_history = []  # List of {"time": iso_string, "value": int}
+_last_log_time = 0
+
+
+def _log_realtime_value(value: int):
+    """Log a realtime value. Only logs once per ~30 seconds to avoid duplicates."""
+    global _last_log_time
+    now = time.time()
+    if now - _last_log_time < 10:  # Don't log more than once per 10 seconds
+        return
+    _last_log_time = now
+    from datetime import datetime
+    _realtime_history.append({
+        "time": datetime.now().isoformat(),
+        "value": value,
+    })
+    # Keep only the last 60 entries
+    if len(_realtime_history) > 60:
+        _realtime_history.pop(0)
+
+
+def _get_realtime_history() -> list:
+    """Return the stored history, padding with zeros if less than 60 entries."""
+    return _realtime_history[-60:]
 
 
 @app.get("/api/articles")
