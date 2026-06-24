@@ -1,30 +1,16 @@
 /**
- * RealtimeAreaChart — Streaming area chart for "Active Users Per Minute"
+ * RealtimeAreaChart — Real per-minute active users from GA4.
  *
- * How it works:
- * - On mount, fetches per-minute history from the backend (/api/realtime/history)
- * - The backend logs the active user count every ~30 seconds
- * - So even if you close and reopen, the chart shows real historical data
- * - Every 30 seconds, the frontend fetches fresh realtime data and appends it
- * - If history has fewer than 60 points (server just started), it fills the
- *   remaining slots based on the current value with natural variance
- *
- * Features:
- * - 60-point rolling window
- * - Smooth spline curve
- * - Gradient fill
- * - Pulsing dot on latest point
- * - "● LIVE" indicator
+ * Data source: GA4 Realtime API 'minutesAgo' dimension.
+ * Each point = actual active users in that specific minute.
+ * 30 data points (minute 29 ago → minute 0 = now).
+ * Refreshes every 15 seconds.
  */
 import React, { useState, useEffect, useCallback } from "react";
 
 const API_BASE = "http://localhost:8000";
-const WINDOW_SIZE = 60;
 const REFRESH_INTERVAL = 15000; // 15 seconds
 
-/**
- * Build a smooth cubic bezier path through points
- */
 function buildSplinePath(points) {
   if (points.length < 2) return "";
   let path = `M ${points[0].x} ${points[0].y}`;
@@ -38,87 +24,48 @@ function buildSplinePath(points) {
   return path;
 }
 
-/**
- * Fill missing history with natural-looking estimated values
- */
-function padHistory(history) {
-  // Only return real data. No fake padding.
-  return history.slice(-WINDOW_SIZE);
-}
-
-export default function RealtimeAreaChart({ currentValue = 0 }) {
+export default function RealtimeAreaChart() {
   const [data, setData] = useState([]);
 
-  // Fetch real history from backend on mount
-  useEffect(() => {
+  const fetchHistory = useCallback(() => {
     fetch(`${API_BASE}/api/realtime/history`)
       .then((r) => r.json())
       .then((d) => {
-        const history = (d.history || []).map((h) => ({ value: h.value }));
-        setData(padHistory(history));
-      })
-      .catch(() => setData([]));
-  }, []);
-
-  // Refresh every 30 seconds — only real data
-  const refresh = useCallback(() => {
-    fetch(`${API_BASE}/api/realtime/history`)
-      .then((r) => r.json())
-      .then((d) => {
-        const history = (d.history || []).map((h) => ({ value: h.value }));
-        setData(padHistory(history));
+        const history = (d.history || []).map((h) => ({ value: h.users || h.value || 0 }));
+        setData(history);
       })
       .catch(() => {});
   }, []);
 
   useEffect(() => {
-    const interval = setInterval(refresh, REFRESH_INTERVAL);
+    fetchHistory();
+    const interval = setInterval(fetchHistory, REFRESH_INTERVAL);
     return () => clearInterval(interval);
-  }, [refresh]);
+  }, [fetchHistory]);
 
-  // Use the live currentValue as the latest point
-  const displayData = [...data];
-  if (currentValue > 0 && displayData.length > 0) {
-    displayData[displayData.length - 1] = { value: currentValue };
-  } else if (currentValue > 0 && displayData.length === 0) {
-    displayData.push({ value: currentValue });
-  }
+  // Display the raw API data — no overrides
+  const displayData = data;
 
-  // Chart calculations — only if we have data
+  // Need at least 2 points
   if (displayData.length < 2) {
     return (
       <div className="rounded-2xl border p-5" style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <p className="text-[10px] uppercase font-medium tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Active Users Per Minute</p>
-            <div className="flex items-baseline gap-3">
-              <span className="text-3xl font-bold tabular-nums" style={{ color: "var(--text-primary)" }}>{currentValue.toLocaleString()}</span>
-              <span className="flex items-center gap-1.5">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
-                </span>
-                <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: "var(--danger)" }}>Live</span>
-              </span>
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center justify-center h-[160px]" style={{ color: "var(--text-muted)" }}>
-          <p className="text-xs">Collecting data... chart will appear as data points accumulate.</p>
+        <p className="text-[10px] uppercase font-medium tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Active Users Per Minute</p>
+        <div className="flex items-center justify-center h-[140px]" style={{ color: "var(--text-muted)" }}>
+          <p className="text-xs">Loading per-minute data...</p>
         </div>
       </div>
     );
   }
 
   const values = displayData.map((d) => d.value);
-  const maxValue = Math.max(...values, 1) * 1.1;
-  const minValue = Math.min(...values) * 0.9;
-  const range = maxValue - minValue || 1;
   const latestValue = values[values.length - 1] || 0;
+  const maxValue = Math.max(...values, 1) * 1.1;
+  const minValue = Math.min(...values.filter(v => v > 0)) * 0.8 || 0;
+  const range = maxValue - minValue || 1;
 
-  // SVG dimensions — extra padding on right for the pulsing dot to be visible
   const W = 700;
-  const W_PADDED = 710; // 10px extra for the live dot
+  const W_PADDED = 710;
   const H = 160;
   const PAD_TOP = 10;
   const PAD_BOTTOM = 5;
@@ -133,15 +80,13 @@ export default function RealtimeAreaChart({ currentValue = 0 }) {
   const areaPath = linePath + ` L ${points[points.length - 1].x} ${H} L ${points[0].x} ${H} Z`;
   const lastPoint = points[points.length - 1];
 
-  const timeLabels = ["-60m", "-45m", "-30m", "-15m", "now"];
-
   return (
     <div className="rounded-2xl border p-5" style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}>
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
           <p className="text-[10px] uppercase font-medium tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>
-            Active Users Per Minute
+            Active Users Per Minute (Real)
           </p>
           <div className="flex items-baseline gap-3">
             <span className="text-3xl font-bold tabular-nums" style={{ color: "var(--text-primary)" }}>
@@ -157,8 +102,8 @@ export default function RealtimeAreaChart({ currentValue = 0 }) {
           </div>
         </div>
         <div className="text-right">
-          <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>Peak</p>
-          <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{Math.round(maxValue / 1.1).toLocaleString()}</p>
+          <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>Peak (30 min)</p>
+          <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{Math.max(...values).toLocaleString()}</p>
         </div>
       </div>
 
@@ -173,10 +118,7 @@ export default function RealtimeAreaChart({ currentValue = 0 }) {
             </linearGradient>
             <filter id="dotGlow">
               <feGaussianBlur stdDeviation="3" result="blur" />
-              <feMerge>
-                <feMergeNode in="blur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
+              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
             </filter>
           </defs>
 
@@ -185,10 +127,8 @@ export default function RealtimeAreaChart({ currentValue = 0 }) {
             <line key={pct} x1="0" y1={PAD_TOP + chartH * (1 - pct)} x2={W_PADDED} y2={PAD_TOP + chartH * (1 - pct)} stroke="var(--border)" strokeWidth="0.5" opacity="0.5" />
           ))}
 
-          {/* Area fill */}
+          {/* Area + Line */}
           <path d={areaPath} fill="url(#realtimeAreaGrad)" />
-
-          {/* Line */}
           <path d={linePath} fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
 
           {/* Pulsing dot */}
@@ -203,18 +143,17 @@ export default function RealtimeAreaChart({ currentValue = 0 }) {
         {/* Y-axis labels */}
         <div className="absolute top-2 left-1 flex flex-col justify-between pointer-events-none" style={{ height: "140px" }}>
           <span className="text-[8px] font-mono" style={{ color: "var(--text-muted)" }}>{Math.round(maxValue / 1.1)}</span>
-          <span className="text-[8px] font-mono" style={{ color: "var(--text-muted)" }}>{Math.round((maxValue / 1.1 + minValue / 0.9) / 2)}</span>
-          <span className="text-[8px] font-mono" style={{ color: "var(--text-muted)" }}>{Math.round(minValue / 0.9)}</span>
+          <span className="text-[8px] font-mono" style={{ color: "var(--text-muted)" }}>{Math.round((maxValue / 1.1 + minValue / 0.8) / 2)}</span>
+          <span className="text-[8px] font-mono" style={{ color: "var(--text-muted)" }}>{Math.round(minValue / 0.8)}</span>
         </div>
       </div>
 
-      {/* X-axis labels */}
+      {/* X-axis */}
       <div className="flex justify-between mt-2 px-1">
-        {timeLabels.map((label) => (
-          <span key={label} className="text-[9px] font-mono" style={{ color: label === "now" ? "var(--accent)" : "var(--text-muted)", fontWeight: label === "now" ? 600 : 400 }}>
-            {label}
-          </span>
-        ))}
+        <span className="text-[9px] font-mono" style={{ color: "var(--text-muted)" }}>-30m</span>
+        <span className="text-[9px] font-mono" style={{ color: "var(--text-muted)" }}>-20m</span>
+        <span className="text-[9px] font-mono" style={{ color: "var(--text-muted)" }}>-10m</span>
+        <span className="text-[9px] font-mono font-semibold" style={{ color: "var(--accent)" }}>now</span>
       </div>
     </div>
   );

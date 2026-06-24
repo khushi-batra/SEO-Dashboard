@@ -63,14 +63,14 @@ export default function RealtimeView({ realtime, onRefresh, todayData = [] }) {
             </div>
             <div className="text-center">
               <p className="text-3xl font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>~{Math.max(1, Math.round(totalActive / 30))}</p>
-              <p className="text-[10px] mt-1" style={{ color: "var(--text-muted)" }}>Users per minute</p>
+              <p className="text-[10px] mt-1" style={{ color: "var(--text-muted)" }}>Avg users per minute</p>
             </div>
           </div>
         </div>
       </div>
 
       {/* ═══════════════ STREAMING AREA CHART ═══════════════ */}
-      <RealtimeAreaChart currentValue={totalActive} />
+      <RealtimeAreaChart />
 
       {/* ═══════════════ LIVE PAGES TABLE ═══════════════ */}
       <div className="rounded-xl border p-5" style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}>

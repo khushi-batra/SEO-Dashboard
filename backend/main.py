@@ -17,6 +17,7 @@ from typing import Optional
 from ga4_service import (
     fetch_all_data,
     fetch_realtime_data,
+    fetch_realtime_per_minute,
     fetch_sessions_by_channel,
     fetch_user_activity_timeline,
     fetch_gsc_queries,
@@ -68,10 +69,11 @@ def get_realtime():
 @app.get("/api/realtime/history")
 def get_realtime_history():
     """
-    Returns the last 60 per-minute realtime values.
-    Stored server-side so the chart shows real data even after page reload.
+    Returns real per-minute active user data from GA4 (last 30 minutes).
+    Each entry = actual users active during that specific minute.
     """
-    return {"history": _get_realtime_history()}
+    data = fetch_realtime_per_minute()
+    return {"history": data}
 
 
 # ─── Per-minute realtime history (in-memory log) ──────────────────────────────

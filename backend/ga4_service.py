@@ -142,6 +142,40 @@ def fetch_realtime_data() -> dict:
     return {"totalActive": total_active, "pages": pages[:30]}
 
 
+def fetch_realtime_per_minute() -> list[dict]:
+    """
+    Fetch active users per minute for the last 30 minutes.
+    Uses the 'minutesAgo' dimension from GA4 Realtime API.
+    Returns: [{"minute": 0, "users": 120}, {"minute": 1, "users": 115}, ...]
+    Sorted from oldest (29 min ago) to newest (0 = now).
+    """
+    client = _get_ga4_client()
+    minute_totals = {}  # minute -> total users across all properties
+
+    for prop_id in _get_property_ids():
+        try:
+            req = RunRealtimeReportRequest(
+                property=f"properties/{prop_id}",
+                dimensions=[Dimension(name="minutesAgo")],
+                metrics=[Metric(name="activeUsers")],
+                limit=30,
+            )
+            resp = client.run_realtime_report(req)
+            for row in resp.rows:
+                minute = int(row.dimension_values[0].value)
+                users = int(row.metric_values[0].value)
+                minute_totals[minute] = minute_totals.get(minute, 0) + users
+        except Exception as e:
+            print(f"[Realtime PerMinute Error] {prop_id}: {e}")
+
+    # Build sorted list from 29 (oldest) to 0 (now)
+    result = []
+    for m in range(29, -1, -1):
+        result.append({"minute": m, "users": minute_totals.get(m, 0)})
+
+    return result
+
+
 # ─── Historical Report (Configurable Date Range) ──────────────────────────────
 
 def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today") -> list[dict]:
