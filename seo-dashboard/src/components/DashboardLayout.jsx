@@ -32,17 +32,19 @@ const TABS = [
   { id: "editor", label: "Editor Queue", icon: ClipboardList },
 ];
 
-// Blog list — Adda Store first (main site), then alphabetical
+// Blog list — Adda Store first (main site), then rest
 const BLOGS = [
   { id: "all", label: "All Blogs" },
-  { id: "adda-store", label: "Adda Store" },
+  { id: "adda-store", label: "Adda Store (Main Site)" },
   { id: "adda-exams", label: "Adda Exams" },
   { id: "adda-jobs", label: "Adda247 Jobs" },
   { id: "bankersadda", label: "BankersAdda" },
-  { id: "career-power", label: "Career Power" },
+  { id: "hindi-bankersadda", label: "Hindi BankersAdda" },
+  { id: "career-power-html", label: "Career Power HTML" },
+  { id: "career-power-blog", label: "Career Power Blog" },
   { id: "current-affairs", label: "Current Affairs" },
   { id: "engineering-adda", label: "Engineering Adda" },
-  { id: "studyiq-main", label: "Study IQ Main" },
+  { id: "studyiq-main", label: "StudyIQ Main Site" },
   { id: "studyiq-articles", label: "StudyIQ Articles" },
   { id: "teaching-adda", label: "Teaching Adda" },
 ];
@@ -70,13 +72,15 @@ export default function DashboardLayout() {
   const blogBrandMap = {
     "adda-store": ["Adda Store", "adda247.com"],
     "adda-exams": ["Adda247 Exams", "adda exams"],
-    "adda-jobs": ["Adda Jobs", "adda247jobs"],
+    "adda-jobs": ["Adda247 Jobs", "adda247jobs"],
     "bankersadda": ["BankersAdda", "bankersadda"],
-    "career-power": ["Career Power"],
+    "hindi-bankersadda": ["Hindi BankersAdda", "hindi.bankersadda"],
+    "career-power-html": ["Career Power HTML", "careerpower.in"],
+    "career-power-blog": ["Career Power Blog", "careerpower.in/blog"],
     "current-affairs": ["Current Affairs"],
     "engineering-adda": ["Engineering Adda", "engineering"],
-    "studyiq-main": ["Study IQ", "studyiq.com"],
-    "studyiq-articles": ["StudyIQ Articles"],
+    "studyiq-main": ["StudyIQ Main", "studyiq.com"],
+    "studyiq-articles": ["StudyIQ Articles", "studyiq.com/articles"],
     "teaching-adda": ["Teaching Adda", "teachersadda"],
   };
 
@@ -182,7 +186,7 @@ export default function DashboardLayout() {
       {/* Blog Selector — horizontal pill buttons */}
       <div className="border-b" style={{ borderColor: "var(--border)", background: "var(--bg-secondary)" }}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2">
-          <div className="flex items-center gap-1.5 overflow-x-auto">
+          <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide" style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
             {BLOGS.map((blog) => {
               const isActive = activeBlog === blog.id;
               return (
