@@ -32,9 +32,16 @@ from google.analytics.data_v1beta.types import (
 )
 from googleapiclient.discovery import build
 
-load_dotenv()
+load_dotenv(override=True)
 
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
+
+def get_gsc_site_urls():
+    urls = []
+    for k, v in os.environ.items():
+        if k.startswith("GSC_SITE_URL") and v.strip():
+            urls.append(v.strip())
+    return urls
 
 PROPERTY_BRANDS = {
     "431779823": "Adda Exams",
@@ -80,9 +87,13 @@ def _get_ga4_client():
     return BetaAnalyticsDataClient(credentials=_build_credentials())
 
 
-def _get_property_ids():
+def _get_property_ids(brand_filter: str = None):
     raw = os.getenv("GA4_PROPERTY_ID", "")
-    return [p.strip() for p in raw.split(",") if p.strip()]
+    all_props = [p.strip() for p in raw.split(",") if p.strip()]
+    if not brand_filter or brand_filter.lower() == "all":
+        return all_props
+    matched = [p for p in all_props if PROPERTY_BRANDS.get(p, "").lower() == brand_filter.lower()]
+    return matched if matched else all_props
 
 
 def _generate_id(url: str) -> str:
@@ -104,7 +115,7 @@ def _path_to_title(path: str) -> str:
 
 # ─── Realtime (Today's Live Data) ─────────────────────────────────────────────
 
-def fetch_realtime_data() -> dict:
+def fetch_realtime_data(brand_filter: str = None) -> dict:
     """
     Fetch current realtime stats: total active users + per-page breakdown.
     This is what shows on the landing page as "live now" data.
@@ -113,7 +124,7 @@ def fetch_realtime_data() -> dict:
     total_active = 0
     pages = []
 
-    for prop_id in _get_property_ids():
+    for prop_id in _get_property_ids(brand_filter):
         brand = PROPERTY_BRANDS.get(prop_id, "Unknown")
         domain = PROPERTY_DOMAINS.get(prop_id, "")
         try:
@@ -152,7 +163,7 @@ def fetch_realtime_data() -> dict:
     return {"totalActive": total_active, "pages": pages[:30]}
 
 
-def fetch_realtime_per_minute() -> list[dict]:
+def fetch_realtime_per_minute(brand_filter: str = None) -> list[dict]:
     """
     Fetch active users per minute for the last 30 minutes.
     Uses the 'minutesAgo' dimension from GA4 Realtime API.
@@ -162,7 +173,7 @@ def fetch_realtime_per_minute() -> list[dict]:
     client = _get_ga4_client()
     minute_totals = {}  # minute -> total users across all properties
 
-    for prop_id in _get_property_ids():
+    for prop_id in _get_property_ids(brand_filter):
         try:
             req = RunRealtimeReportRequest(
                 property=f"properties/{prop_id}",
@@ -188,7 +199,7 @@ def fetch_realtime_per_minute() -> list[dict]:
 
 # ─── Historical Report (Configurable Date Range) ──────────────────────────────
 
-def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today") -> list[dict]:
+def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today", brand_filter: str = None) -> list[dict]:
     """
     Fetch article list from GA4 with traffic metrics.
     This is the PRIMARY data source — the article inventory.
@@ -198,7 +209,7 @@ def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today") -> li
     client = _get_ga4_client()
     seen_urls = {}  # Deduplicate across properties
 
-    for prop_id in _get_property_ids():
+    for prop_id in _get_property_ids(brand_filter):
         brand = PROPERTY_BRANDS.get(prop_id, "Unknown")
         domain = PROPERTY_DOMAINS.get(prop_id, "")
         try:
@@ -274,8 +285,8 @@ def enrich_with_gsc(articles: list[dict], start_date: str = None, end_date: str 
     Takes the GA4 article list and ENRICHES it with GSC search data.
     Same articles, additional perspective (how they perform in Google Search).
     """
-    site_url = os.getenv("GSC_SITE_URL", "")
-    if not site_url:
+    site_urls = get_gsc_site_urls()
+    if not site_urls:
         return articles
 
     credentials = _build_credentials(scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
@@ -284,48 +295,59 @@ def enrich_with_gsc(articles: list[dict], start_date: str = None, end_date: str 
     end_dt = end_date or (date.today() - timedelta(days=3)).isoformat()
     start_dt = start_date or (date.today() - timedelta(days=31)).isoformat()
 
-    try:
-        response = service.searchanalytics().query(
-            siteUrl=site_url,
-            body={
-                "startDate": start_dt,
-                "endDate": end_dt,
-                "dimensions": ["page"],
-                "rowLimit": 200,
-            },
-        ).execute()
-    except Exception as e:
-        print(f"[GSC Error]: {e}")
-        return articles
-
-    # Build GSC lookup by URL
     gsc_map = {}
-    for row in response.get("rows", []):
-        url = row["keys"][0]
-        gsc_map[url] = {
-            "clicks": int(row["clicks"]),
-            "impressions": int(row["impressions"]),
-            "avgPosition": round(row["position"], 1),
-            "ctr": round(row["ctr"] * 100, 2),  # percentage
-        }
+    for site_url in site_urls:
+        try:
+            response = service.searchanalytics().query(
+                siteUrl=site_url,
+                body={
+                    "startDate": start_dt,
+                    "endDate": end_dt,
+                    "dimensions": ["page"],
+                    "rowLimit": 1000,
+                },
+            ).execute()
+            
+            for row in response.get("rows", []):
+                url = row["keys"][0]
+                if url not in gsc_map:
+                    gsc_map[url] = {
+                        "clicks": int(row["clicks"]),
+                        "impressions": int(row["impressions"]),
+                        "avgPosition": float(row["position"]),
+                        "ctr": float(row["ctr"]),
+                        "count": 1
+                    }
+                else:
+                    gsc_map[url]["clicks"] += int(row["clicks"])
+                    gsc_map[url]["impressions"] += int(row["impressions"])
+                    gsc_map[url]["avgPosition"] += float(row["position"])
+                    gsc_map[url]["ctr"] += float(row["ctr"])
+                    gsc_map[url]["count"] += 1
+        except Exception as e:
+            print(f"[GSC Error] {site_url}: {e}")
 
     # Enrich articles that have a GSC match
     matched = 0
     for article in articles:
         if article["url"] in gsc_map:
-            article.update(gsc_map[article["url"]])
+            data = gsc_map[article["url"]]
+            article["clicks"] = data["clicks"]
+            article["impressions"] = data["impressions"]
+            article["avgPosition"] = round(data["avgPosition"] / data["count"], 1)
+            article["ctr"] = round((data["ctr"] / data["count"]) * 100, 2)
             matched += 1
 
-    print(f"[GSC] Enriched {matched}/{len(articles)} articles with search data")
+    print(f"[GSC] Enriched {matched}/{len(articles)} articles with search data from {len(site_urls)} sites")
     return articles
 
 
 # ─── Sessions by Channel ───────────────────────────────────────────────────────
 
-def fetch_sessions_by_channel(start_date="28daysAgo", end_date="today") -> list[dict]:
+def fetch_sessions_by_channel(start_date="28daysAgo", end_date="today", brand_filter: str = None) -> list[dict]:
     client = _get_ga4_client()
     channels = {}
-    for prop_id in _get_property_ids():
+    for prop_id in _get_property_ids(brand_filter):
         try:
             request = RunReportRequest(
                 property=f"properties/{prop_id}",
@@ -349,10 +371,10 @@ def fetch_sessions_by_channel(start_date="28daysAgo", end_date="today") -> list[
 
 # ─── User Activity Timeline ───────────────────────────────────────────────────
 
-def fetch_user_activity_timeline(start_date="28daysAgo", end_date="today") -> list[dict]:
+def fetch_user_activity_timeline(start_date="28daysAgo", end_date="today", brand_filter: str = None) -> list[dict]:
     client = _get_ga4_client()
     daily = {}
-    for prop_id in _get_property_ids():
+    for prop_id in _get_property_ids(brand_filter):
         try:
             request = RunReportRequest(
                 property=f"properties/{prop_id}",
@@ -378,37 +400,49 @@ def fetch_user_activity_timeline(start_date="28daysAgo", end_date="today") -> li
 # ─── GSC Queries ──────────────────────────────────────────────────────────────
 
 def fetch_gsc_queries() -> list[dict]:
-    site_url = os.getenv("GSC_SITE_URL", "")
-    if not site_url:
+    site_urls = get_gsc_site_urls()
+    if not site_urls:
         return []
     credentials = _build_credentials(scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
     service = build("searchconsole", "v1", credentials=credentials)
     end_dt = (date.today() - timedelta(days=3)).isoformat()
     start_dt = (date.today() - timedelta(days=31)).isoformat()
-    try:
-        response = service.searchanalytics().query(
-            siteUrl=site_url,
-            body={"startDate": start_dt, "endDate": end_dt, "dimensions": ["query"], "rowLimit": 20},
-        ).execute()
-    except Exception as e:
-        print(f"[GSC Queries Error]: {e}")
-        return []
-    return [
-        {"query": r["keys"][0], "clicks": int(r["clicks"]),
-         "impressions": int(r["impressions"]), "position": round(r["position"], 1)}
-        for r in response.get("rows", [])
-    ]
+    
+    all_queries = {}
+    for site_url in site_urls:
+        try:
+            response = service.searchanalytics().query(
+                siteUrl=site_url,
+                body={"startDate": start_dt, "endDate": end_dt, "dimensions": ["query"], "rowLimit": 30},
+            ).execute()
+            for r in response.get("rows", []):
+                q = r["keys"][0]
+                if q not in all_queries:
+                    all_queries[q] = {"query": q, "clicks": 0, "impressions": 0, "position": 0.0, "count": 0}
+                all_queries[q]["clicks"] += int(r["clicks"])
+                all_queries[q]["impressions"] += int(r["impressions"])
+                all_queries[q]["position"] += float(r["position"])
+                all_queries[q]["count"] += 1
+        except Exception as e:
+            print(f"[GSC Queries Error] {site_url}: {e}")
+            
+    # average the position
+    for q in all_queries.values():
+        q["position"] = round(q["position"] / q["count"], 1)
+
+    sorted_queries = sorted(all_queries.values(), key=lambda x: x["clicks"], reverse=True)[:20]
+    return sorted_queries
 
 
 # ─── Main Combined Fetch ──────────────────────────────────────────────────────
 
-def fetch_all_data(start_date="30daysAgo", end_date="today") -> list[dict]:
+def fetch_all_data(start_date="30daysAgo", end_date="today", brand_filter: str = None) -> list[dict]:
     """
     1. Get article list from GA4 (the inventory)
     2. Enrich with GSC data (search insights for the same articles)
     Returns a single unified list — NOT additive.
     """
-    print(f"[Fetch] Date range: {start_date} to {end_date}")
-    articles = fetch_articles(start_date, end_date)
-    articles = enrich_with_gsc(articles)
+    print(f"[Fetch] Date range: {start_date} to {end_date}, Brand: {brand_filter}")
+    articles = fetch_articles(start_date, end_date, brand_filter)
+    articles = enrich_with_gsc(articles, start_date, end_date)
     return articles

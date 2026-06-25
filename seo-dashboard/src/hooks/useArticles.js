@@ -7,39 +7,56 @@ import { useState, useEffect, useCallback } from "react";
 
 const API_BASE = "http://localhost:8000";
 
-export function useArticles(dateOrRange) {
+export function useArticles(dateOrRange, brand = "all") {
   const [articles, setArticles] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setArticles([]); // Clear stale data instantly
     setLoading(true);
-    // If "28days" is passed, use the range endpoint; otherwise use specific date
-    const param = dateOrRange === "28days" ? "range=28days" : `date=${dateOrRange}`;
-    fetch(`${API_BASE}/api/articles?${param}`)
+    let url = `${API_BASE}/api/articles?`;
+    if (dateOrRange === "7days" || dateOrRange === "14days" || dateOrRange === "28days" || dateOrRange === "30days") {
+        url += `range=${dateOrRange}`;
+    } else {
+        url += `date=${dateOrRange}`;
+    }
+    if (brand && brand !== "all") {
+        url += `&brand=${encodeURIComponent(brand)}`;
+    }
+    
+    fetch(url)
       .then((r) => r.json())
       .then((d) => setArticles(d.articles || []))
       .catch(() => setArticles([]))
       .finally(() => setLoading(false));
-  }, [dateOrRange]);
+  }, [dateOrRange, brand]);
 
   return { articles, loading };
 }
 
-export function useRealtime() {
+export function useRealtime(brand = "all") {
   const [realtime, setRealtime] = useState({ totalActive: 0, pages: [] });
   const [loading, setLoading] = useState(true);
 
-  const refresh = useCallback(() => {
-    fetch(`${API_BASE}/api/realtime`)
-      .then((r) => r.json())
-      .then(setRealtime)
-      .catch(() => {});
-  }, []);
+  const refresh = useCallback(async () => {
+    let url = `${API_BASE}/api/realtime`;
+    if (brand && brand !== "all") {
+        url += `?brand=${encodeURIComponent(brand)}`;
+    }
+    try {
+      const r = await fetch(url);
+      const data = await r.json();
+      setRealtime(data);
+    } catch (e) {
+      // handle error silently for interval
+    }
+  }, [brand]);
 
   useEffect(() => {
+    setRealtime({ totalActive: 0, pages: [] }); // Clear stale data instantly
     setLoading(true);
-    refresh();
-    setLoading(false);
+    refresh().finally(() => setLoading(false));
+    
     const interval = setInterval(refresh, 30000); // Refresh every 30s
     return () => clearInterval(interval);
   }, [refresh]);

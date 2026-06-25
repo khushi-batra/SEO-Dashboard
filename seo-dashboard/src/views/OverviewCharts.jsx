@@ -14,16 +14,17 @@ import { Users, Eye, MousePointerClick, TrendingUp, Search, Radio, Clock } from 
 
 const API_BASE = "http://localhost:8000";
 
-export default function OverviewCharts({ data, realtime, onGoToRealtime }) {
+export default function OverviewCharts({ data, realtime, onGoToRealtime, brand, range }) {
   const [channels, setChannels] = useState([]);
   const [timeline, setTimeline] = useState([]);
   const [queries, setQueries] = useState([]);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/channels`).then(r => r.json()).then(setChannels).catch(() => {});
-    fetch(`${API_BASE}/api/timeline`).then(r => r.json()).then(setTimeline).catch(() => {});
+    let q = `?brand=${encodeURIComponent(brand || 'all')}&range=${encodeURIComponent(range || '28days')}`;
+    fetch(`${API_BASE}/api/channels${q}`).then(r => r.json()).then(setChannels).catch(() => {});
+    fetch(`${API_BASE}/api/timeline${q}`).then(r => r.json()).then(setTimeline).catch(() => {});
     fetch(`${API_BASE}/api/gsc/queries`).then(r => r.json()).then(setQueries).catch(() => {});
-  }, []);
+  }, [brand, range]);
 
   const totalViews = data.reduce((s, a) => s + (a.pageViews || 0), 0);
   const totalUsers = data.reduce((s, a) => s + (a.users || 0), 0);

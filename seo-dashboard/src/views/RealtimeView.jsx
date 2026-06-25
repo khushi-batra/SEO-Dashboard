@@ -9,7 +9,7 @@ import React, { useState, useMemo } from "react";
 import { Radio, RefreshCw, Users, Eye, Search, TrendingUp, Zap, Activity } from "lucide-react";
 import RealtimeAreaChart from "../components/RealtimeAreaChart";
 
-export default function RealtimeView({ realtime, onRefresh, todayData = [] }) {
+export default function RealtimeView({ realtime, onRefresh, todayData = [], brand }) {
   const [pageSearch, setPageSearch] = useState("");
 
   const totalActive = realtime?.totalActive || 0;
@@ -70,7 +70,7 @@ export default function RealtimeView({ realtime, onRefresh, todayData = [] }) {
       </div>
 
       {/* ═══════════════ STREAMING AREA CHART ═══════════════ */}
-      <RealtimeAreaChart />
+      <RealtimeAreaChart brand={brand} />
 
       {/* ═══════════════ LIVE PAGES TABLE ═══════════════ */}
       <div className="rounded-xl border p-5" style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}>

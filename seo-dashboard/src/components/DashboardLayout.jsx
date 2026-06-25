@@ -49,6 +49,22 @@ const BLOGS = [
   { id: "teaching-adda", label: "Teaching Adda" },
 ];
 
+// Blog filter — applies to data views (not Realtime/Overview which show all)
+const blogBrandMap = {
+  "adda-store": ["Adda Store"],
+  "adda-exams": ["Adda Exams"],
+  "adda-jobs": ["Adda Jobs"],
+  "bankersadda": ["BankersAdda"],
+  "hindi-bankersadda": ["Hindi Bankers Adda"],
+  "career-power-html": ["Career Power HTML"],
+  "career-power-blog": ["Career Power Blog"],
+  "current-affairs": ["Current Affairs"],
+  "engineering-adda": ["Engineering Adda"],
+  "studyiq-main": ["StudyIQ Mains Site"],
+  "studyiq-articles": ["StudyIQ Articles"],
+  "teaching-adda": ["Teaching Adda"],
+};
+
 export default function DashboardLayout() {
   const [activeTab, setActiveTab] = useState("realtime");
   const [searchQuery, setSearchQuery] = useState("");
@@ -56,33 +72,17 @@ export default function DashboardLayout() {
   const [activeBlog, setActiveBlog] = useState("all");
   const { theme, toggleTheme } = useTheme();
 
-  // Always shows a date. Default is today but overview still fetches 28 days range.
-  const dateStr = selectedDate.toISOString().split("T")[0];
-  const todayStr = new Date().toISOString().split("T")[0];
-  const isToday = dateStr === todayStr;
+  const [dateRange, setDateRange] = useState("28days");
 
-  // If today is selected, overview uses 28-day range; if a past date is picked, use that specific day
-  const fetchParam = isToday ? "28days" : dateStr;
-  const { articles, loading } = useArticles(fetchParam);
-  const { realtime, refresh: refreshRealtime } = useRealtime();
+  const dateStr = selectedDate.toISOString().split("T")[0];
+  const fetchParam = dateRange === "custom" ? dateStr : dateRange;
+  
+  const activeBrandString = activeBlog === "all" ? "all" : (blogBrandMap[activeBlog]?.[0] || "all");
+  
+  const { articles, loading } = useArticles(fetchParam, activeBrandString);
+  const { realtime, refresh: refreshRealtime } = useRealtime(activeBrandString);
 
   const goToRealtime = () => setActiveTab("realtime");
-
-  // Blog filter — applies to data views (not Realtime/Overview which show all)
-  const blogBrandMap = {
-    "adda-store": ["Adda Store"],
-    "adda-exams": ["Adda Exams"],
-    "adda-jobs": ["Adda Jobs"],
-    "bankersadda": ["BankersAdda"],
-    "hindi-bankersadda": ["Hindi Bankers Adda"],
-    "career-power-html": ["Career Power HTML"],
-    "career-power-blog": ["Career Power Blog"],
-    "current-affairs": ["Current Affairs"],
-    "engineering-adda": ["Engineering Adda"],
-    "studyiq-main": ["StudyIQ Mains Site"],
-    "studyiq-articles": ["StudyIQ Articles"],
-    "teaching-adda": ["Teaching Adda"],
-  };
 
   const blogFilteredData = useMemo(() => {
     if (activeBlog === "all") return articles;
@@ -107,9 +107,9 @@ export default function DashboardLayout() {
   const renderView = () => {
     switch (activeTab) {
       case "overview":
-        return <OverviewCharts data={articles} realtime={realtime} onGoToRealtime={goToRealtime} />;
+        return <OverviewCharts data={filteredData} realtime={realtime} onGoToRealtime={goToRealtime} brand={activeBrandString} range={fetchParam} />;
       case "realtime":
-        return <RealtimeView realtime={realtime} onRefresh={refreshRealtime} todayData={articles} />;
+        return <RealtimeView realtime={realtime} onRefresh={refreshRealtime} todayData={filteredData} brand={activeBrandString} />;
       case "top-pages":
         return <TopPages data={filteredData} />;
       case "opportunities":
@@ -139,23 +139,37 @@ export default function DashboardLayout() {
             </div>
 
             <div className="flex items-center gap-3">
-              {/* Calendar Date Picker */}
+              {/* Range Filter */}
               <div className="flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5" style={{ color: "var(--text-muted)" }} />
-                <DatePicker
-                  selected={selectedDate}
-                  onChange={(date) => setSelectedDate(date || new Date())}
-                  maxDate={new Date()}
-                  dateFormat="dd MMM yyyy"
-                  className="text-xs px-2.5 py-1.5 rounded-lg border w-[130px] cursor-pointer"
+                <select 
+                  value={dateRange} 
+                  onChange={(e) => setDateRange(e.target.value)}
+                  className="text-xs px-2.5 py-1.5 rounded-lg border outline-none"
                   style={{ background: "var(--bg-tertiary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
-                />
-                {isToday && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-500 font-medium">
-                    Today
-                  </span>
-                )}
+                >
+                  <option value="today">Today</option>
+                  <option value="7days">Last 7 Days</option>
+                  <option value="14days">Last 14 Days</option>
+                  <option value="28days">Last 28 Days</option>
+                  <option value="30days">Last 30 Days</option>
+                  <option value="custom">Custom Date</option>
+                </select>
               </div>
+
+              {/* Calendar Date Picker (only show if custom) */}
+              {dateRange === "custom" && (
+                <div className="flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5" style={{ color: "var(--text-muted)" }} />
+                  <DatePicker
+                    selected={selectedDate}
+                    onChange={(date) => setSelectedDate(date || new Date())}
+                    maxDate={new Date()}
+                    dateFormat="dd MMM yyyy"
+                    className="text-xs px-2.5 py-1.5 rounded-lg border w-[130px] cursor-pointer"
+                    style={{ background: "var(--bg-tertiary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
+                  />
+                </div>
+              )}
 
               {/* Search */}
               <div className="relative w-52">

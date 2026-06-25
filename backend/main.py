@@ -55,61 +55,35 @@ def root():
 
 
 @app.get("/api/realtime")
-def get_realtime():
+def get_realtime(brand: Optional[str] = Query(None)):
     """
     Live data — active users RIGHT NOW.
-    Also stores per-minute history so the chart works even after page reload.
     """
-    # Use a shorter cache TTL (e.g., 25s) specifically for realtime since clients poll every 30s.
-    # This prevents multiple dashboard users from spamming the GA4 API.
     now = time.time()
-    cache_key = "realtime_data"
+    cache_key = f"realtime_data_{brand or 'all'}"
     if cache_key in _cache and (now - _cache[cache_key]["ts"]) < 25:
         data = _cache[cache_key]["data"]
     else:
-        data = fetch_realtime_data()
+        data = fetch_realtime_data(brand)
         _cache[cache_key] = {"data": data, "ts": now}
         
-    # Log this value to the per-minute history
-    _log_realtime_value(data.get("totalActive", 0))
     return data
 
 
 @app.get("/api/realtime/history")
-def get_realtime_history():
+def get_realtime_history(brand: Optional[str] = Query(None)):
     """
     Returns real per-minute active user data from GA4 (last 30 minutes).
-    Each entry = actual users active during that specific minute.
     """
-    data = fetch_realtime_per_minute()
-    return {"history": data}
-
-
-# ─── Per-minute realtime history (in-memory log) ──────────────────────────────
-_realtime_history = []  # List of {"time": iso_string, "value": int}
-_last_log_time = 0
-
-
-def _log_realtime_value(value: int):
-    """Log a realtime value. Only logs once per ~30 seconds to avoid duplicates."""
-    global _last_log_time
+    cache_key = f"realtime_history_{brand or 'all'}"
     now = time.time()
-    if now - _last_log_time < 10:  # Don't log more than once per 10 seconds
-        return
-    _last_log_time = now
-    from datetime import datetime
-    _realtime_history.append({
-        "time": datetime.now().isoformat(),
-        "value": value,
-    })
-    # Keep only the last 60 entries
-    if len(_realtime_history) > 60:
-        _realtime_history.pop(0)
+    if cache_key in _cache and (now - _cache[cache_key]["ts"]) < 30:
+        data = _cache[cache_key]["data"]
+    else:
+        data = fetch_realtime_per_minute(brand)
+        _cache[cache_key] = {"data": data, "ts": now}
 
-
-def _get_realtime_history() -> list:
-    """Return the stored history, padding with zeros if less than 60 entries."""
-    return _realtime_history[-60:]
+    return {"history": data}
 
 
 @app.get("/api/articles")
@@ -140,12 +114,10 @@ def get_articles(
     else:
         start, end = "28daysAgo", "today"
 
-    cache_key = f"articles_{start}_{end}"
-    articles = _cached_fetch(cache_key, fetch_all_data, start, end)
+    cache_key = f"articles_{start}_{end}_{brand or 'all'}"
+    articles = _cached_fetch(cache_key, fetch_all_data, start, end, brand)
 
     # Apply filters
-    if brand:
-        articles = [a for a in articles if a["brand"].lower() == brand.lower()]
     if search:
         q = search.lower()
         articles = [a for a in articles if q in a["title"].lower() or q in a["url"].lower()]
@@ -154,15 +126,24 @@ def get_articles(
 
 
 @app.get("/api/metrics/summary")
-def get_summary(date: Optional[str] = Query(None)):
+def get_summary(date: Optional[str] = Query(None), range: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
     """Aggregate metrics."""
     from datetime import date as dt_date
-    if date:
+    if range:
+        range_map = {"7days": "7daysAgo", "14days": "14daysAgo", "28days": "28daysAgo", "30days": "30daysAgo"}
+        start = range_map.get(range, "28daysAgo")
+        end = "today"
+    elif date:
         today_str = dt_date.today().isoformat()
-        start, end = ("today", "today") if date == today_str else (date, date)
+        if date == today_str:
+            start, end = "today", "today"
+        else:
+            start, end = date, date
     else:
         start, end = "today", "today"
-    articles = _cached_fetch(f"articles_{start}_{end}", fetch_all_data, start, end)
+        
+    cache_key = f"articles_{start}_{end}_{brand or 'all'}"
+    articles = _cached_fetch(cache_key, fetch_all_data, start, end, brand)
 
     total_views = sum(a["pageViews"] for a in articles)
     total_users = sum(a["users"] for a in articles)
@@ -182,13 +163,19 @@ def get_summary(date: Optional[str] = Query(None)):
 
 
 @app.get("/api/channels")
-def get_channels():
-    return _cached_fetch("channels", fetch_sessions_by_channel)
+def get_channels(range: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
+    range_map = {"7days": "7daysAgo", "14days": "14daysAgo", "28days": "28daysAgo", "30days": "30daysAgo"}
+    start = range_map.get(range, "28daysAgo")
+    cache_key = f"channels_{start}_today_{brand or 'all'}"
+    return _cached_fetch(cache_key, fetch_sessions_by_channel, start, "today", brand)
 
 
 @app.get("/api/timeline")
-def get_timeline():
-    return _cached_fetch("timeline", fetch_user_activity_timeline)
+def get_timeline(range: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
+    range_map = {"7days": "7daysAgo", "14days": "14daysAgo", "28days": "28daysAgo", "30days": "30daysAgo"}
+    start = range_map.get(range, "28daysAgo")
+    cache_key = f"timeline_{start}_today_{brand or 'all'}"
+    return _cached_fetch(cache_key, fetch_user_activity_timeline, start, "today", brand)
 
 
 @app.get("/api/gsc/queries")

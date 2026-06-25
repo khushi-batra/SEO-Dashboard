@@ -24,18 +24,19 @@ function buildSplinePath(points) {
   return path;
 }
 
-export default function RealtimeAreaChart() {
+export default function RealtimeAreaChart({ brand }) {
   const [data, setData] = useState([]);
 
   const fetchHistory = useCallback(() => {
-    fetch(`${API_BASE}/api/realtime/history`)
+    let q = brand && brand !== "all" ? `?brand=${encodeURIComponent(brand)}` : "";
+    fetch(`${API_BASE}/api/realtime/history${q}`)
       .then((r) => r.json())
       .then((d) => {
         const history = (d.history || []).map((h) => ({ value: h.users || h.value || 0 }));
         setData(history);
       })
       .catch(() => {});
-  }, []);
+  }, [brand]);
 
   useEffect(() => {
     fetchHistory();
