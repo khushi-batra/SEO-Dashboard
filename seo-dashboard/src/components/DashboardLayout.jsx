@@ -70,18 +70,18 @@ export default function DashboardLayout() {
 
   // Blog filter — applies to data views (not Realtime/Overview which show all)
   const blogBrandMap = {
-    "adda-store": ["Adda Store", "adda247.com"],
-    "adda-exams": ["Adda247 Exams", "adda exams"],
-    "adda-jobs": ["Adda247 Jobs", "adda247jobs"],
-    "bankersadda": ["BankersAdda", "bankersadda"],
-    "hindi-bankersadda": ["Hindi BankersAdda", "hindi.bankersadda"],
-    "career-power-html": ["Career Power HTML", "careerpower.in"],
-    "career-power-blog": ["Career Power Blog", "careerpower.in/blog"],
+    "adda-store": ["Adda Store"],
+    "adda-exams": ["Adda Exams"],
+    "adda-jobs": ["Adda Jobs"],
+    "bankersadda": ["BankersAdda"],
+    "hindi-bankersadda": ["Hindi Bankers Adda"],
+    "career-power-html": ["Career Power HTML"],
+    "career-power-blog": ["Career Power Blog"],
     "current-affairs": ["Current Affairs"],
-    "engineering-adda": ["Engineering Adda", "engineering"],
-    "studyiq-main": ["StudyIQ Main", "studyiq.com"],
-    "studyiq-articles": ["StudyIQ Articles", "studyiq.com/articles"],
-    "teaching-adda": ["Teaching Adda", "teachersadda"],
+    "engineering-adda": ["Engineering Adda"],
+    "studyiq-main": ["StudyIQ Mains Site"],
+    "studyiq-articles": ["StudyIQ Articles"],
+    "teaching-adda": ["Teaching Adda"],
   };
 
   const blogFilteredData = useMemo(() => {

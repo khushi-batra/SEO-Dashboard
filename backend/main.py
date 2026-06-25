@@ -60,7 +60,16 @@ def get_realtime():
     Live data — active users RIGHT NOW.
     Also stores per-minute history so the chart works even after page reload.
     """
-    data = fetch_realtime_data()
+    # Use a shorter cache TTL (e.g., 25s) specifically for realtime since clients poll every 30s.
+    # This prevents multiple dashboard users from spamming the GA4 API.
+    now = time.time()
+    cache_key = "realtime_data"
+    if cache_key in _cache and (now - _cache[cache_key]["ts"]) < 25:
+        data = _cache[cache_key]["data"]
+    else:
+        data = fetch_realtime_data()
+        _cache[cache_key] = {"data": data, "ts": now}
+        
     # Log this value to the per-minute history
     _log_realtime_value(data.get("totalActive", 0))
     return data

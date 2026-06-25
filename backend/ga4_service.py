@@ -37,15 +37,25 @@ load_dotenv()
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 
 PROPERTY_BRANDS = {
-    "332111738": "Career Power",
-    "431779823": "Adda247 Exams",
-    "352396958": "Career Power GA4",
+    "431779823": "Adda Exams",
+    "355422738": "Adda Jobs",
+    "355756107": "Teaching Adda",
+    "355414070": "Engineering Adda",
+    "209760965": "Current Affairs",
+    "314016871": "Adda Store",
+    "352396958": "Career Power HTML",
+    "332111738": "Career Power Blog",
+    "355432122": "BankersAdda",
+    "355756324": "Hindi Bankers Adda",
+    "292607808": "StudyIQ Mains Site",
+    "384799357": "StudyIQ Articles",
 }
 
 PROPERTY_DOMAINS = {
     "332111738": "https://www.careerpower.in",
     "431779823": "https://www.adda247.com",
     "352396958": "https://www.careerpower.in",
+    # Note: Adding domains for other properties if known, else GA4 data will just return relative paths
 }
 
 
