@@ -14,17 +14,10 @@ import { Users, Eye, MousePointerClick, TrendingUp, Search, Radio, Clock } from 
 
 const API_BASE = "http://localhost:8000";
 
-export default function OverviewCharts({ data, realtime, onGoToRealtime, brand, range }) {
-  const [channels, setChannels] = useState([]);
-  const [timeline, setTimeline] = useState([]);
-  const [queries, setQueries] = useState([]);
-
-  useEffect(() => {
-    let q = `?brand=${encodeURIComponent(brand || 'all')}&range=${encodeURIComponent(range || '28days')}`;
-    fetch(`${API_BASE}/api/channels${q}`).then(r => r.json()).then(setChannels).catch(() => {});
-    fetch(`${API_BASE}/api/timeline${q}`).then(r => r.json()).then(setTimeline).catch(() => {});
-    fetch(`${API_BASE}/api/gsc/queries`).then(r => r.json()).then(setQueries).catch(() => {});
-  }, [brand, range]);
+export default function OverviewCharts({ data, realtime, onGoToRealtime, brand, range, overviewData }) {
+  const channels = overviewData?.channels || [];
+  const timeline = overviewData?.timeline || [];
+  const queries = overviewData?.queries || [];
 
   const totalViews = data.reduce((s, a) => s + (a.pageViews || 0), 0);
   const totalUsers = data.reduce((s, a) => s + (a.users || 0), 0);
@@ -40,12 +33,21 @@ export default function OverviewCharts({ data, realtime, onGoToRealtime, brand, 
   const tooltipStyle = { backgroundColor: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: "8px", color: "var(--text-primary)", fontSize: "11px" };
   const fmtNum = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(0) + "K" : n.toString();
 
+  const getRangeLabel = () => {
+    if (range === "7days") return "Last 7 Days";
+    if (range === "14days") return "Last 14 Days";
+    if (range === "28days") return "Last 28 Days";
+    if (range === "30days") return "Last 30 Days";
+    if (range) return `Date: ${range}`;
+    return "Last 28 Days";
+  };
+
   return (
     <div className="space-y-5">
       {/* ── Header + Live Badge ── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>Overview — Last 28 Days</h2>
+          <h2 className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>Overview — {getRangeLabel()}</h2>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>Aggregated GA4 + Google Search Console data</p>
         </div>
         <button onClick={onGoToRealtime} className="flex items-center gap-3 px-4 py-3 rounded-xl border cursor-pointer transition hover:scale-[1.02] active:scale-[0.98]" style={{ background: "var(--bg-secondary)", borderColor: "var(--accent-border)" }}>

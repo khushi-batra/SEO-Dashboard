@@ -3,15 +3,16 @@
  * Tab order: Overview, Realtime, Top Pages, Opportunities, Low CTR, Monetization Gaps, Brands, Editor Queue
  * Date filter: Calendar-based date picker for historical data
  */
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import DatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
 import {
   Search, Sun, Moon, BarChart3, Radio, Zap, Target,
   TrendingDown, ShoppingCart, Building2, ClipboardList, Calendar,
 } from "lucide-react";
-import { useArticles, useRealtime } from "../hooks/useArticles";
+import { useArticles, useRealtime, useOverviewData } from "../hooks/useArticles";
 import { useTheme } from "../context/ThemeContext";
+import SkeletonLoader from "./SkeletonLoader";
 import OverviewCharts from "../views/OverviewCharts";
 import RealtimeView from "../views/RealtimeView";
 import TopPages from "../views/TopPages";
@@ -79,8 +80,15 @@ export default function DashboardLayout() {
   
   const activeBrandString = activeBlog === "all" ? "all" : (blogBrandMap[activeBlog]?.[0] || "all");
   
-  const { articles, loading } = useArticles(fetchParam, activeBrandString);
-  const { realtime, refresh: refreshRealtime } = useRealtime(activeBrandString);
+  // Always fetch 'all' articles so local filtering is instantaneous when switching blogs
+  const { articles, loading: articlesLoading } = useArticles(fetchParam, "all");
+  const { realtime, refresh: refreshRealtime, loading: realtimeLoading } = useRealtime(activeBrandString);
+  const overviewData = useOverviewData(activeBrandString, fetchParam);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setActiveTab("realtime");
+  }, [activeBlog]);
 
   const goToRealtime = () => setActiveTab("realtime");
 
@@ -107,7 +115,7 @@ export default function DashboardLayout() {
   const renderView = () => {
     switch (activeTab) {
       case "overview":
-        return <OverviewCharts data={filteredData} realtime={realtime} onGoToRealtime={goToRealtime} brand={activeBrandString} range={fetchParam} />;
+        return <OverviewCharts data={filteredData} realtime={realtime} onGoToRealtime={goToRealtime} brand={activeBrandString} range={fetchParam} overviewData={overviewData} />;
       case "realtime":
         return <RealtimeView realtime={realtime} onRefresh={refreshRealtime} todayData={filteredData} brand={activeBrandString} />;
       case "top-pages":
@@ -134,13 +142,16 @@ export default function DashboardLayout() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div>
-              <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>Adda247 SEO Matrix</h1>
+              <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>SEO Growth Dashboard</h1>
               <p className="text-xs" style={{ color: "var(--text-muted)" }}>GA4 + Search Console Dashboard</p>
             </div>
 
             <div className="flex items-center gap-3">
               {/* Range Filter */}
               <div className="flex items-center gap-1.5">
+                {articlesLoading && (
+                  <div className="w-4 h-4 border-2 border-t-transparent border-blue-500 rounded-full animate-spin mr-1"></div>
+                )}
                 <select 
                   value={dateRange} 
                   onChange={(e) => setDateRange(e.target.value)}
@@ -248,12 +259,9 @@ export default function DashboardLayout() {
       </div>
 
       {/* Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-5">
-        {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="animate-spin w-6 h-6 border-3 border-t-transparent rounded-full" style={{ borderColor: "var(--accent)", borderTopColor: "transparent" }}></div>
-            <span className="ml-3 text-sm" style={{ color: "var(--text-secondary)" }}>Loading...</span>
-          </div>
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-5 animate-in fade-in duration-500">
+        {(activeTab === "overview" && overviewData.loading) || (activeTab === "realtime" && realtimeLoading) || articlesLoading ? (
+          <SkeletonLoader />
         ) : (
           renderView()
         )}

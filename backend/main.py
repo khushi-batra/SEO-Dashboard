@@ -35,7 +35,7 @@ app.add_middleware(
 
 # ─── Cache (2 min TTL) ────────────────────────────────────────────────────────
 _cache = {}
-CACHE_TTL = 120
+CACHE_TTL = 3600  # 1 hour TTL for heavy aggregations
 
 
 def _cached_fetch(key: str, fetcher, *args):
@@ -61,7 +61,7 @@ def get_realtime(brand: Optional[str] = Query(None)):
     """
     now = time.time()
     cache_key = f"realtime_data_{brand or 'all'}"
-    if cache_key in _cache and (now - _cache[cache_key]["ts"]) < 25:
+    if cache_key in _cache and (now - _cache[cache_key]["ts"]) < 5:
         data = _cache[cache_key]["data"]
     else:
         data = fetch_realtime_data(brand)
@@ -77,7 +77,7 @@ def get_realtime_history(brand: Optional[str] = Query(None)):
     """
     cache_key = f"realtime_history_{brand or 'all'}"
     now = time.time()
-    if cache_key in _cache and (now - _cache[cache_key]["ts"]) < 30:
+    if cache_key in _cache and (now - _cache[cache_key]["ts"]) < 10:
         data = _cache[cache_key]["data"]
     else:
         data = fetch_realtime_per_minute(brand)
@@ -163,19 +163,43 @@ def get_summary(date: Optional[str] = Query(None), range: Optional[str] = Query(
 
 
 @app.get("/api/channels")
-def get_channels(range: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
-    range_map = {"7days": "7daysAgo", "14days": "14daysAgo", "28days": "28daysAgo", "30days": "30daysAgo"}
-    start = range_map.get(range, "28daysAgo")
-    cache_key = f"channels_{start}_today_{brand or 'all'}"
-    return _cached_fetch(cache_key, fetch_sessions_by_channel, start, "today", brand)
+def get_channels(date: Optional[str] = Query(None), range: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
+    from datetime import date as dt_date
+    if range:
+        range_map = {"7days": "7daysAgo", "14days": "14daysAgo", "28days": "28daysAgo", "30days": "30daysAgo"}
+        start = range_map.get(range, "28daysAgo")
+        end = "today"
+    elif date:
+        today_str = dt_date.today().isoformat()
+        if date == today_str:
+            start, end = "today", "today"
+        else:
+            start, end = date, date
+    else:
+        start, end = "28daysAgo", "today"
+        
+    cache_key = f"channels_{start}_{end}_{brand or 'all'}"
+    return _cached_fetch(cache_key, fetch_sessions_by_channel, start, end, brand)
 
 
 @app.get("/api/timeline")
-def get_timeline(range: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
-    range_map = {"7days": "7daysAgo", "14days": "14daysAgo", "28days": "28daysAgo", "30days": "30daysAgo"}
-    start = range_map.get(range, "28daysAgo")
-    cache_key = f"timeline_{start}_today_{brand or 'all'}"
-    return _cached_fetch(cache_key, fetch_user_activity_timeline, start, "today", brand)
+def get_timeline(date: Optional[str] = Query(None), range: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
+    from datetime import date as dt_date
+    if range:
+        range_map = {"7days": "7daysAgo", "14days": "14daysAgo", "28days": "28daysAgo", "30days": "30daysAgo"}
+        start = range_map.get(range, "28daysAgo")
+        end = "today"
+    elif date:
+        today_str = dt_date.today().isoformat()
+        if date == today_str:
+            start, end = "today", "today"
+        else:
+            start, end = date, date
+    else:
+        start, end = "28daysAgo", "today"
+        
+    cache_key = f"timeline_{start}_{end}_{brand or 'all'}"
+    return _cached_fetch(cache_key, fetch_user_activity_timeline, start, end, brand)
 
 
 @app.get("/api/gsc/queries")

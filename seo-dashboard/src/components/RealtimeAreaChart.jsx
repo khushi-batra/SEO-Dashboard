@@ -9,7 +9,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 
 const API_BASE = "http://localhost:8000";
-const REFRESH_INTERVAL = 15000; // 15 seconds
+const REFRESH_INTERVAL = 5000; // 5 seconds
 
 function buildSplinePath(points) {
   if (points.length < 2) return "";

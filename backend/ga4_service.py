@@ -37,6 +37,8 @@ load_dotenv(override=True)
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 
 def get_gsc_site_urls():
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
     urls = []
     for k, v in os.environ.items():
         if k.startswith("GSC_SITE_URL") and v.strip():
@@ -292,8 +294,23 @@ def enrich_with_gsc(articles: list[dict], start_date: str = None, end_date: str 
     credentials = _build_credentials(scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
     service = build("searchconsole", "v1", credentials=credentials)
 
-    end_dt = end_date or (date.today() - timedelta(days=3)).isoformat()
-    start_dt = start_date or (date.today() - timedelta(days=31)).isoformat()
+    from datetime import date, timedelta
+    
+    def parse_gsc_date(d_str, default_days_ago):
+        if not d_str:
+            return (date.today() - timedelta(days=default_days_ago)).isoformat()
+        if d_str == "today":
+            return date.today().isoformat()
+        if d_str.endswith("daysAgo"):
+            try:
+                days = int(d_str.replace("daysAgo", ""))
+                return (date.today() - timedelta(days=days)).isoformat()
+            except:
+                pass
+        return d_str
+
+    end_dt = parse_gsc_date(end_date, 3)
+    start_dt = parse_gsc_date(start_date, 31)
 
     gsc_map = {}
     for site_url in site_urls:
@@ -310,8 +327,14 @@ def enrich_with_gsc(articles: list[dict], start_date: str = None, end_date: str 
             
             for row in response.get("rows", []):
                 url = row["keys"][0]
-                if url not in gsc_map:
-                    gsc_map[url] = {
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                relative_url = parsed.path
+                if parsed.query:
+                    relative_url += "?" + parsed.query
+                    
+                if relative_url not in gsc_map:
+                    gsc_map[relative_url] = {
                         "clicks": int(row["clicks"]),
                         "impressions": int(row["impressions"]),
                         "avgPosition": float(row["position"]),
@@ -319,19 +342,31 @@ def enrich_with_gsc(articles: list[dict], start_date: str = None, end_date: str 
                         "count": 1
                     }
                 else:
-                    gsc_map[url]["clicks"] += int(row["clicks"])
-                    gsc_map[url]["impressions"] += int(row["impressions"])
-                    gsc_map[url]["avgPosition"] += float(row["position"])
-                    gsc_map[url]["ctr"] += float(row["ctr"])
-                    gsc_map[url]["count"] += 1
+                    gsc_map[relative_url]["clicks"] += int(row["clicks"])
+                    gsc_map[relative_url]["impressions"] += int(row["impressions"])
+                    gsc_map[relative_url]["avgPosition"] += float(row["position"])
+                    gsc_map[relative_url]["ctr"] += float(row["ctr"])
+                    gsc_map[relative_url]["count"] += 1
         except Exception as e:
             print(f"[GSC Error] {site_url}: {e}")
 
     # Enrich articles that have a GSC match
     matched = 0
+    from urllib.parse import urlparse
     for article in articles:
+        parsed = urlparse(article["url"])
+        rel_url = parsed.path
+        if parsed.query:
+            rel_url += "?" + parsed.query
+            
+        match_key = None
         if article["url"] in gsc_map:
-            data = gsc_map[article["url"]]
+            match_key = article["url"]
+        elif rel_url in gsc_map:
+            match_key = rel_url
+            
+        if match_key:
+            data = gsc_map[match_key]
             article["clicks"] = data["clicks"]
             article["impressions"] = data["impressions"]
             article["avgPosition"] = round(data["avgPosition"] / data["count"], 1)
