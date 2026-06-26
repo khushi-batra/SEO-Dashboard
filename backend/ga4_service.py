@@ -82,10 +82,18 @@ PROPERTY_BRANDS = {
 }
 
 PROPERTY_DOMAINS = {
-    "332111738": "https://www.careerpower.in",
     "431779823": "https://www.adda247.com",
-    "352396958": "https://www.careerpower.in",
-    # Note: Adding domains for other properties if known, else GA4 data will just return relative paths
+    "355422738": "https://www.adda247jobs.com",
+    "355756107": "https://www.teachersadda.com",
+    "355414070": "https://www.adda247.com",       # Engineering Adda (subpath of adda247)
+    "209760965": "https://www.adda247.com",       # Current Affairs (subpath of adda247)
+    "314016871": "https://store.adda247.com",     # Adda Store
+    "352396958": "https://www.careerpower.in",    # Career Power HTML
+    "332111738": "https://www.careerpower.in",    # Career Power Blog
+    "355432122": "https://www.bankersadda.com",
+    "355756324": "https://www.bankersadda.com",   # Hindi Bankers Adda (same domain)
+    "292607808": "https://www.studyiq.com",       # StudyIQ Main Site
+    "384799357": "https://www.studyiq.com",       # StudyIQ Articles (same domain)
 }
 
 
@@ -177,6 +185,11 @@ def fetch_realtime_data(brand_filter: str = None) -> dict:
     """
     Fetch current realtime stats: total active users + per-page breakdown.
     This is what shows on the landing page as "live now" data.
+    
+    URL resolution strategy:
+    1. First check _GLOBAL_URL_MAP (populated by fetch_articles on any data load)
+    2. For any still-missing URLs, do ONE batch query per property (last 7 days)
+       to get all title→path mappings, then match locally
     """
     client = _get_ga4_client()
     total_active = 0
@@ -186,7 +199,7 @@ def fetch_realtime_data(brand_filter: str = None) -> dict:
         brand = PROPERTY_BRANDS.get(prop_id, "Unknown")
         domain = PROPERTY_DOMAINS.get(prop_id, "")
         try:
-            # Get total active users
+            # 1. Get total active users
             req = RunRealtimeReportRequest(
                 property=f"properties/{prop_id}",
                 metrics=[Metric(name="activeUsers")],
@@ -196,40 +209,80 @@ def fetch_realtime_data(brand_filter: str = None) -> dict:
             if resp.rows:
                 total_active += int(resp.rows[0].metric_values[0].value)
 
-            # Get per-page breakdown (Realtime)
+            # 2. Get per-page breakdown (Realtime)
             req2 = RunRealtimeReportRequest(
                 property=f"properties/{prop_id}",
                 dimensions=[Dimension(name="unifiedScreenName")],
                 metrics=[Metric(name="activeUsers")],
-                limit=25,
+                limit=30,
             )
             resp2 = client.run_realtime_report(req2)
+            
+            prop_pages = []  # Collect this property's pages
+            unresolved_titles = []  # Track titles without URLs
+            
             for row in resp2.rows:
                 page_name = row.dimension_values[0].value
                 users = int(row.metric_values[0].value)
                 if page_name in ("(not set)", "", "/", "(other)"):
                     continue
                 
-                # Try to map the exact title, or a heavily stripped version
+                # Try _GLOBAL_URL_MAP first (instant, no API call)
                 mapped_url = _GLOBAL_URL_MAP.get(page_name.strip().lower(), "")
                 if not mapped_url:
-                    # Try removing common suffixes like " - Adda247" or extra spaces
                     clean_title = page_name.split("-")[0].split("|")[0].strip().lower()
                     mapped_url = _GLOBAL_URL_MAP.get(clean_title, "")
                 
-                # FINAL FALLBACK: Query GA4 dynamically for this exact title
-                if not mapped_url:
-                    mapped_url = _resolve_missing_url(client, prop_id, page_name, domain)
-                    if mapped_url:
-                        # Cache it permanently so we never have to resolve it again
-                        _GLOBAL_URL_MAP[page_name.strip().lower()] = mapped_url
-                
-                pages.append({
+                prop_pages.append({
                     "title": page_name,
                     "url": mapped_url,
                     "activeUsers": users,
                     "brand": brand,
                 })
+                if not mapped_url:
+                    unresolved_titles.append(page_name)
+            
+            # 3. If there are unresolved titles, do ONE batch query for this property
+            if unresolved_titles:
+                try:
+                    url_req = RunReportRequest(
+                        property=f"properties/{prop_id}",
+                        dimensions=[Dimension(name="pageTitle"), Dimension(name="pagePath")],
+                        metrics=[Metric(name="screenPageViews")],
+                        date_ranges=[DateRange(start_date="7daysAgo", end_date="today")],
+                        limit=1000,
+                    )
+                    url_resp = client.run_report(url_req)
+                    
+                    # Build a local title→url map for this property
+                    local_map = {}
+                    for r in url_resp.rows:
+                        t = r.dimension_values[0].value
+                        path = r.dimension_values[1].value
+                        if t and t != "(not set)":
+                            full_url = f"{domain}{path}"
+                            local_map[t.strip().lower()] = full_url
+                            # Also index by first part before dash/pipe
+                            clean = t.split("-")[0].split("|")[0].strip().lower()
+                            if clean:
+                                local_map[clean] = full_url
+                            # Cache globally for future calls
+                            _GLOBAL_URL_MAP[t.strip().lower()] = full_url
+                    
+                    # Now resolve the unresolved pages
+                    for p in prop_pages:
+                        if not p["url"]:
+                            key = p["title"].strip().lower()
+                            p["url"] = local_map.get(key, "")
+                            if not p["url"]:
+                                clean = p["title"].split("-")[0].split("|")[0].strip().lower()
+                                p["url"] = local_map.get(clean, "")
+                            if p["url"]:
+                                _GLOBAL_URL_MAP[key] = p["url"]
+                except Exception as e:
+                    print(f"[Realtime Batch URL Error] {prop_id}: {e}")
+            
+            pages.extend(prop_pages)
         except Exception as e:
             print(f"[Realtime Error] {prop_id}: {e}")
 
