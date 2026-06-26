@@ -10,7 +10,7 @@ import {
   Search, Sun, Moon, BarChart3, Radio, Zap, Target,
   TrendingDown, ShoppingCart, Building2, ClipboardList, Calendar,
 } from "lucide-react";
-import { useArticles, useRealtime, useOverviewData } from "../hooks/useArticles";
+import { useArticles, useRealtime, useOverviewData, useLowCTRData } from "../hooks/useArticles";
 import { useTheme } from "../context/ThemeContext";
 import SkeletonLoader from "./SkeletonLoader";
 import OverviewCharts from "../views/OverviewCharts";
@@ -19,7 +19,6 @@ import TopPages from "../views/TopPages";
 import OpportunityPages from "../views/OpportunityPages";
 import LowCTR from "../views/LowCTR";
 import MonetizationGaps from "../views/MonetizationGaps";
-import BrandDashboards from "../views/BrandDashboards";
 import EditorQueues from "../views/EditorQueues";
 
 const TABS = [
@@ -29,14 +28,11 @@ const TABS = [
   { id: "opportunities", label: "Opportunities", icon: Target },
   { id: "low-ctr", label: "Low CTR", icon: TrendingDown },
   { id: "monetization", label: "Monetization Gaps", icon: ShoppingCart },
-  { id: "brands", label: "Brands", icon: Building2 },
   { id: "editor", label: "Editor Queue", icon: ClipboardList },
 ];
 
-// Blog list — Adda Store first (main site), then rest
 const BLOGS = [
   { id: "all", label: "All Blogs" },
-  { id: "adda-store", label: "Adda Store (Main Site)" },
   { id: "adda-exams", label: "Adda Exams" },
   { id: "adda-jobs", label: "Adda247 Jobs" },
   { id: "bankersadda", label: "BankersAdda" },
@@ -45,9 +41,10 @@ const BLOGS = [
   { id: "career-power-blog", label: "Career Power Blog" },
   { id: "current-affairs", label: "Current Affairs" },
   { id: "engineering-adda", label: "Engineering Adda" },
-  { id: "studyiq-main", label: "StudyIQ Main Site" },
   { id: "studyiq-articles", label: "StudyIQ Articles" },
   { id: "teaching-adda", label: "Teaching Adda" },
+  { id: "adda-store", label: "Adda Store (Main Site)" },
+  { id: "studyiq-main", label: "StudyIQ Main Site" },
 ];
 
 // Blog filter — applies to data views (not Realtime/Overview which show all)
@@ -84,6 +81,7 @@ export default function DashboardLayout() {
   const { articles, loading: articlesLoading } = useArticles(fetchParam, "all");
   const { realtime, refresh: refreshRealtime, loading: realtimeLoading } = useRealtime(activeBrandString);
   const overviewData = useOverviewData(activeBrandString, fetchParam);
+  const lowCtrData = useLowCTRData(activeBrandString);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -123,11 +121,9 @@ export default function DashboardLayout() {
       case "opportunities":
         return <OpportunityPages data={filteredData} />;
       case "low-ctr":
-        return <LowCTR data={filteredData} />;
+        return <LowCTR keywords={lowCtrData.keywords} />;
       case "monetization":
         return <MonetizationGaps data={filteredData} />;
-      case "brands":
-        return <BrandDashboards data={filteredData} />;
       case "editor":
         return <EditorQueues data={filteredData} />;
       default:
@@ -260,7 +256,7 @@ export default function DashboardLayout() {
 
       {/* Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-5 animate-in fade-in duration-500">
-        {(activeTab === "overview" && overviewData.loading) || (activeTab === "realtime" && realtimeLoading) || articlesLoading ? (
+        {(activeTab === "overview" && overviewData.loading) || (activeTab === "low-ctr" && lowCtrData.loading) || (activeTab === "realtime" && realtimeLoading) || articlesLoading ? (
           <SkeletonLoader />
         ) : (
           renderView()

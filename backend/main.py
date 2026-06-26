@@ -21,6 +21,7 @@ from ga4_service import (
     fetch_sessions_by_channel,
     fetch_user_activity_timeline,
     fetch_gsc_queries,
+    fetch_gsc_low_ctr_keywords,
 )
 
 app = FastAPI(title="Adda247 SEO Matrix API", version="3.0.0")
@@ -203,8 +204,15 @@ def get_timeline(date: Optional[str] = Query(None), range: Optional[str] = Query
 
 
 @app.get("/api/gsc/queries")
-def get_gsc_queries():
-    return _cached_fetch("gsc_queries", fetch_gsc_queries)
+def get_gsc_queries(brand: Optional[str] = Query(None)):
+    cache_key = f"gsc_queries_{brand or 'all'}"
+    return _cached_fetch(cache_key, fetch_gsc_queries, brand)
+
+
+@app.get("/api/gsc/low-ctr-keywords")
+def get_gsc_low_ctr_keywords(brand: Optional[str] = Query(None)):
+    cache_key = f"gsc_low_ctr_{brand or 'all'}"
+    return _cached_fetch(cache_key, fetch_gsc_low_ctr_keywords, brand)
 
 
 @app.get("/api/cache/clear")

@@ -1,0 +1,39 @@
+import os
+from dotenv import load_dotenv
+load_dotenv(override=True)
+from google.oauth2 import service_account
+from google.analytics.data_v1beta import BetaAnalyticsDataClient
+from google.analytics.data_v1beta.types import RunRealtimeReportRequest, Dimension, Metric
+
+def _build_credentials():
+    return service_account.Credentials.from_service_account_info({
+        "type": os.getenv("GOOGLE_SERVICE_ACCOUNT_TYPE", "service_account"),
+        "project_id": os.getenv("GOOGLE_PROJECT_ID"),
+        "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
+        "private_key": os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n"),
+        "client_email": os.getenv("GOOGLE_CLIENT_EMAIL"),
+        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+        "token_uri": os.getenv("GOOGLE_TOKEN_URI"),
+    }, scopes=["https://www.googleapis.com/auth/analytics.readonly"])
+
+client = BetaAnalyticsDataClient(credentials=_build_credentials())
+dims_to_test = [
+    "pagePath", "pageLocation", "unifiedPagePathScreen", "unifiedPageScreen", 
+    "fullPageUrl", "landingPage", "customEvent:page_location"
+]
+
+for dim in dims_to_test:
+    req = RunRealtimeReportRequest(
+        property="properties/431779823",
+        dimensions=[Dimension(name="unifiedScreenName"), Dimension(name=dim)],
+        metrics=[Metric(name="activeUsers")],
+        limit=1,
+    )
+    try:
+        resp = client.run_realtime_report(req)
+        print(f"SUCCESS with {dim}!")
+        for row in resp.rows:
+            print(" ->", row.dimension_values[0].value, row.dimension_values[1].value)
+        break
+    except Exception as e:
+        print(f"FAILED {dim}: {str(e).split('For a list')[0]}")

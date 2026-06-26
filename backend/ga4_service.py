@@ -36,13 +36,34 @@ load_dotenv(override=True)
 
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 
-def get_gsc_site_urls():
+def get_gsc_site_urls(brand_filter: str = None):
     from dotenv import load_dotenv
     load_dotenv(override=True)
     urls = []
+    
+    # We only have a domain map for finding specific GSC urls by brand
+    domain_to_brand = {
+        "https://www.careerpower.in/": ["career power html", "career power blog"],
+        "https://www.studyiq.com/": ["studyiq main site", "studyiq articles"],
+        "https://www.teachersadda.com/": ["teaching adda"],
+        "https://www.adda247jobs.com/": ["adda jobs"],
+        "https://www.bankersadda.com/": ["bankersadda", "hindi bankers adda"],
+        "https://www.adda247.com/": ["adda exams", "current affairs", "engineering adda"]
+    }
+    
     for k, v in os.environ.items():
         if k.startswith("GSC_SITE_URL") and v.strip():
-            urls.append(v.strip())
+            url = v.strip()
+            # If a specific brand is requested, only return its matching GSC url
+            if brand_filter and brand_filter.lower() != "all":
+                brands_for_url = domain_to_brand.get(url, [])
+                if brand_filter.lower() in brands_for_url:
+                    urls.append(url)
+            else:
+                # If "all" is requested, EXCLUDE StudyIQ
+                if "studyiq.com" in url:
+                    continue
+                urls.append(url)
     return urls
 
 PROPERTY_BRANDS = {
@@ -93,7 +114,7 @@ def _get_property_ids(brand_filter: str = None):
     raw = os.getenv("GA4_PROPERTY_ID", "")
     all_props = [p.strip() for p in raw.split(",") if p.strip()]
     if not brand_filter or brand_filter.lower() == "all":
-        return all_props
+        return [p for p in all_props if p not in ("314016871", "292607808")]
     matched = [p for p in all_props if PROPERTY_BRANDS.get(p, "").lower() == brand_filter.lower()]
     return matched if matched else all_props
 
@@ -116,6 +137,41 @@ def _path_to_title(path: str) -> str:
 
 
 # ─── Realtime (Today's Live Data) ─────────────────────────────────────────────
+
+def _resolve_missing_url(client, prop_id, title, domain):
+    """
+    Dynamically fallback to querying GA4 standard reports using a fuzzy CONTAINS filter
+    to find URLs for titles that might have been changed slightly after publishing.
+    """
+    # Use first 4 words for a robust fuzzy search
+    first_half = " ".join(title.split()[:4])
+    if len(first_half) < 5:
+        return ""
+    
+    from google.analytics.data_v1beta.types import FilterExpression, Filter
+    try:
+        req = RunReportRequest(
+            property=f"properties/{prop_id}",
+            dimensions=[Dimension(name="pageTitle"), Dimension(name="pagePath")],
+            metrics=[Metric(name="screenPageViews")],
+            date_ranges=[DateRange(start_date="7daysAgo", end_date="today")],
+            dimension_filter=FilterExpression(
+                filter=Filter(
+                    field_name="pageTitle",
+                    string_filter=Filter.StringFilter(
+                        match_type=Filter.StringFilter.MatchType.CONTAINS,
+                        value=first_half
+                    )
+                )
+            ),
+            limit=1
+        )
+        resp = client.run_report(req)
+        if resp.rows:
+            return f"{domain}{resp.rows[0].dimension_values[1].value}"
+    except Exception as e:
+        print(f"[Dynamic Resolve Error] {title}: {e}")
+    return ""
 
 def fetch_realtime_data(brand_filter: str = None) -> dict:
     """
@@ -140,7 +196,7 @@ def fetch_realtime_data(brand_filter: str = None) -> dict:
             if resp.rows:
                 total_active += int(resp.rows[0].metric_values[0].value)
 
-            # Get per-page breakdown
+            # Get per-page breakdown (Realtime)
             req2 = RunRealtimeReportRequest(
                 property=f"properties/{prop_id}",
                 dimensions=[Dimension(name="unifiedScreenName")],
@@ -151,16 +207,33 @@ def fetch_realtime_data(brand_filter: str = None) -> dict:
             for row in resp2.rows:
                 page_name = row.dimension_values[0].value
                 users = int(row.metric_values[0].value)
-                if page_name in ("(not set)", "", "/"):
+                if page_name in ("(not set)", "", "/", "(other)"):
                     continue
+                
+                # Try to map the exact title, or a heavily stripped version
+                mapped_url = _GLOBAL_URL_MAP.get(page_name.strip().lower(), "")
+                if not mapped_url:
+                    # Try removing common suffixes like " - Adda247" or extra spaces
+                    clean_title = page_name.split("-")[0].split("|")[0].strip().lower()
+                    mapped_url = _GLOBAL_URL_MAP.get(clean_title, "")
+                
+                # FINAL FALLBACK: Query GA4 dynamically for this exact title
+                if not mapped_url:
+                    mapped_url = _resolve_missing_url(client, prop_id, page_name, domain)
+                    if mapped_url:
+                        # Cache it permanently so we never have to resolve it again
+                        _GLOBAL_URL_MAP[page_name.strip().lower()] = mapped_url
+                
                 pages.append({
                     "title": page_name,
+                    "url": mapped_url,
                     "activeUsers": users,
                     "brand": brand,
                 })
         except Exception as e:
             print(f"[Realtime Error] {prop_id}: {e}")
 
+    # Sort pages by active users descending
     pages.sort(key=lambda x: x["activeUsers"], reverse=True)
     return {"totalActive": total_active, "pages": pages[:30]}
 
@@ -201,6 +274,8 @@ def fetch_realtime_per_minute(brand_filter: str = None) -> list[dict]:
 
 # ─── Historical Report (Configurable Date Range) ──────────────────────────────
 
+_GLOBAL_URL_MAP = {}
+
 def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today", brand_filter: str = None) -> list[dict]:
     """
     Fetch article list from GA4 with traffic metrics.
@@ -208,6 +283,7 @@ def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today", brand
     
     Each article = one unique page path with its GA4 metrics.
     """
+    global _GLOBAL_URL_MAP
     client = _get_ga4_client()
     seen_urls = {}  # Deduplicate across properties
 
@@ -244,6 +320,13 @@ def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today", brand
 
                 url = f"{domain}{page_path}"
                 title = page_title if page_title and page_title != "(not set)" else _path_to_title(page_path)
+
+                _GLOBAL_URL_MAP[title.strip().lower()] = url
+                _GLOBAL_URL_MAP[_path_to_title(page_path).strip().lower()] = url # Also map the raw path title just in case
+                
+                clean_t = title.split("-")[0].split("|")[0].strip().lower()
+                if clean_t:
+                    _GLOBAL_URL_MAP[clean_t] = url
 
                 # Deduplicate: if same URL from different property, keep the one with more views
                 if url in seen_urls:
@@ -282,12 +365,12 @@ def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today", brand
 
 # ─── GSC Enrichment ────────────────────────────────────────────────────────────
 
-def enrich_with_gsc(articles: list[dict], start_date: str = None, end_date: str = None) -> list[dict]:
+def enrich_with_gsc(articles: list[dict], start_date: str = None, end_date: str = None, brand_filter: str = None) -> list[dict]:
     """
     Takes the GA4 article list and ENRICHES it with GSC search data.
     Same articles, additional perspective (how they perform in Google Search).
     """
-    site_urls = get_gsc_site_urls()
+    site_urls = get_gsc_site_urls(brand_filter)
     if not site_urls:
         return articles
 
@@ -335,11 +418,13 @@ def enrich_with_gsc(articles: list[dict], start_date: str = None, end_date: str 
                     
                 if relative_url not in gsc_map:
                     gsc_map[relative_url] = {
+                        "full_url": url,
                         "clicks": int(row["clicks"]),
                         "impressions": int(row["impressions"]),
                         "avgPosition": float(row["position"]),
                         "ctr": float(row["ctr"]),
-                        "count": 1
+                        "count": 1,
+                        "matched": False
                     }
                 else:
                     gsc_map[relative_url]["clicks"] += int(row["clicks"])
@@ -371,9 +456,32 @@ def enrich_with_gsc(articles: list[dict], start_date: str = None, end_date: str 
             article["impressions"] = data["impressions"]
             article["avgPosition"] = round(data["avgPosition"] / data["count"], 1)
             article["ctr"] = round((data["ctr"] / data["count"]) * 100, 2)
+            data["matched"] = True
             matched += 1
 
-    print(f"[GSC] Enriched {matched}/{len(articles)} articles with search data from {len(site_urls)} sites")
+    # Append any GSC pages that weren't in GA4 (0 traffic, but rank in search)
+    unmatched_count = 0
+    for rel_url, data in gsc_map.items():
+        if not data["matched"]:
+            title = _path_to_title(rel_url)
+            articles.append({
+                "id": _generate_id(data["full_url"]),
+                "title": title,
+                "url": data["full_url"],
+                "brand": "Search Console",
+                "pageViews": 0,
+                "users": 0,
+                "newUsers": 0,
+                "sessions": 0,
+                "avgDuration": 0,
+                "clicks": data["clicks"],
+                "impressions": data["impressions"],
+                "avgPosition": round(data["avgPosition"] / data["count"], 1),
+                "ctr": round((data["ctr"] / data["count"]) * 100, 2),
+            })
+            unmatched_count += 1
+
+    print(f"[GSC] Enriched {matched} GA4 articles. Added {unmatched_count} GSC-only articles. Total: {len(articles)}")
     return articles
 
 
@@ -434,8 +542,8 @@ def fetch_user_activity_timeline(start_date="28daysAgo", end_date="today", brand
 
 # ─── GSC Queries ──────────────────────────────────────────────────────────────
 
-def fetch_gsc_queries() -> list[dict]:
-    site_urls = get_gsc_site_urls()
+def fetch_gsc_queries(brand_filter: str = None) -> list[dict]:
+    site_urls = get_gsc_site_urls(brand_filter)
     if not site_urls:
         return []
     credentials = _build_credentials(scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
@@ -469,6 +577,49 @@ def fetch_gsc_queries() -> list[dict]:
     return sorted_queries
 
 
+def fetch_gsc_low_ctr_keywords(brand_filter: str = None) -> list[dict]:
+    site_urls = get_gsc_site_urls(brand_filter)
+    if not site_urls:
+        return []
+    credentials = _build_credentials(scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
+    service = build("searchconsole", "v1", credentials=credentials)
+    end_dt = (date.today() - timedelta(days=3)).isoformat()
+    start_dt = (date.today() - timedelta(days=31)).isoformat()
+    
+    all_queries = {}
+    for site_url in site_urls:
+        try:
+            # Fetch top 100 queries by impressions to find low CTR
+            response = service.searchanalytics().query(
+                siteUrl=site_url,
+                body={"startDate": start_dt, "endDate": end_dt, "dimensions": ["query"], "rowLimit": 100},
+            ).execute()
+            for r in response.get("rows", []):
+                q = r["keys"][0]
+                if q not in all_queries:
+                    all_queries[q] = {"query": q, "clicks": 0, "impressions": 0, "position": 0.0, "count": 0}
+                all_queries[q]["clicks"] += int(r["clicks"])
+                all_queries[q]["impressions"] += int(r["impressions"])
+                all_queries[q]["position"] += float(r["position"])
+                all_queries[q]["count"] += 1
+        except Exception as e:
+            print(f"[GSC Keywords Error] {site_url}: {e}")
+            
+    results = []
+    for q in all_queries.values():
+        clicks = q["clicks"]
+        impressions = q["impressions"]
+        ctr = round((clicks / impressions) * 100, 2) if impressions > 0 else 0.0
+        q["ctr"] = ctr
+        q["position"] = round(q["position"] / q["count"], 1)
+        results.append(q)
+
+    # Filter for low CTR (e.g. < 5%) and sort by impressions
+    low_ctr_queries = [q for q in results if q["ctr"] < 5.0 and q["impressions"] > 50]
+    sorted_low_ctr = sorted(low_ctr_queries, key=lambda x: x["impressions"], reverse=True)[:50]
+    return sorted_low_ctr
+
+
 # ─── Main Combined Fetch ──────────────────────────────────────────────────────
 
 def fetch_all_data(start_date="30daysAgo", end_date="today", brand_filter: str = None) -> list[dict]:
@@ -479,5 +630,5 @@ def fetch_all_data(start_date="30daysAgo", end_date="today", brand_filter: str =
     """
     print(f"[Fetch] Date range: {start_date} to {end_date}, Brand: {brand_filter}")
     articles = fetch_articles(start_date, end_date, brand_filter)
-    articles = enrich_with_gsc(articles, start_date, end_date)
+    articles = enrich_with_gsc(articles, start_date, end_date, brand_filter)
     return articles

@@ -95,17 +95,24 @@ export default function RealtimeView({ realtime, onRefresh, todayData = [], bran
           <span className="col-span-2 text-[9px] uppercase font-medium text-right" style={{ color: "var(--text-muted)" }}>Brand</span>
         </div>
         <div className="max-h-[280px] overflow-y-auto">
-          {filteredPages.length > 0 ? filteredPages.map((p, i) => (
-            <div key={i} className="grid grid-cols-12 gap-2 items-center px-3 py-2.5 border-b transition-colors hover:rounded-lg" style={{ borderColor: "var(--border)" }}>
-              <span className="col-span-1 text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>{i + 1}</span>
-              <span className="col-span-7 text-[11px] truncate" style={{ color: "var(--text-secondary)" }}>{p.title}</span>
-              <div className="col-span-2 flex items-center justify-end gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
-                <span className="text-[11px] font-bold" style={{ color: "var(--text-primary)" }}>{p.activeUsers}</span>
+          {filteredPages.length > 0 ? filteredPages.map((p, i) => {
+            return (
+              <div key={i} className="grid grid-cols-12 gap-2 items-center px-3 py-2.5 border-b transition-colors hover:rounded-lg" style={{ borderColor: "var(--border)" }}>
+                <span className="col-span-1 text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>{i + 1}</span>
+                <div className="col-span-7 flex flex-col justify-center min-w-0">
+                  <p className="font-medium truncate text-xs" style={{ color: "var(--text-primary)" }}>{p.title}</p>
+                  {p.url && (
+                    <p className="text-[10px] truncate" style={{ color: "var(--text-muted)" }}>{p.url}</p>
+                  )}
+                </div>
+                <div className="col-span-2 flex items-center justify-end gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                  <span className="text-[11px] font-bold" style={{ color: "var(--text-primary)" }}>{p.activeUsers}</span>
+                </div>
+                <span className="col-span-2 text-[10px] text-right truncate" style={{ color: "var(--text-muted)" }}>{p.brand}</span>
               </div>
-              <span className="col-span-2 text-[10px] text-right" style={{ color: "var(--text-muted)" }}>{p.brand}</span>
-            </div>
-          )) : (
+            );
+          }) : (
             <div className="py-10 text-center">
               <Activity className="w-8 h-8 mx-auto mb-2 opacity-20" style={{ color: "var(--text-muted)" }} />
               <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>No active pages at this moment</p>

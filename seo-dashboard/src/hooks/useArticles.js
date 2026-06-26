@@ -94,3 +94,22 @@ export function useOverviewData(brand, range) {
 
   return { ...data, loading };
 }
+
+export function useLowCTRData(brand) {
+  const [keywords, setKeywords] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true);
+    let q = `?brand=${encodeURIComponent(brand || 'all')}`;
+    
+    fetch(`${API_BASE}/api/gsc/low-ctr-keywords${q}`)
+      .then(r => r.json())
+      .then(data => setKeywords(data))
+      .catch(() => setKeywords([]))
+      .finally(() => setLoading(false));
+  }, [brand]);
+
+  return { keywords, loading };
+}

@@ -9,28 +9,14 @@ import React, { useMemo } from "react";
 import { TrendingDown, AlertTriangle } from "lucide-react";
 import ArticleTable from "../components/ArticleTable";
 
-export default function LowCTR({ data }) {
-  // Filter: pages that have GSC data (impressions > 0) and low CTR
-  // Low CTR = high impressions relative to clicks
-  const lowCtrPages = useMemo(() => {
-    return data
-      .filter((a) => a.impressions > 1000 && a.clicks > 0)
-      .map((a) => ({
-        ...a,
-        ctr: a.ctr || (a.impressions > 0 ? ((a.clicks / a.impressions) * 100) : 0),
-      }))
-      .filter((a) => a.ctr < 5) // Less than 5% CTR = underperforming
-      .sort((a, b) => a.ctr - b.ctr); // Worst first
-  }, [data]);
-
+export default function LowCTR({ keywords = [] }) {
   const columns = [
     {
-      key: "title",
-      label: "Article",
+      key: "query",
+      label: "Keyword",
       render: (row) => (
         <div className="max-w-sm">
-          <p className="font-medium truncate text-xs" style={{ color: "var(--text-primary)" }}>{row.title}</p>
-          <p className="text-[10px] truncate" style={{ color: "var(--text-muted)" }}>{row.url}</p>
+          <p className="font-medium truncate text-xs" style={{ color: "var(--text-primary)" }}>{row.query}</p>
         </div>
       ),
     },
@@ -54,11 +40,11 @@ export default function LowCTR({ data }) {
       ),
     },
     {
-      key: "avgPosition",
+      key: "position",
       label: "Position",
       render: (row) => (
-        <span className="font-mono text-xs" style={{ color: row.avgPosition <= 10 ? "var(--success)" : "var(--warning)" }}>
-          {row.avgPosition.toFixed(1)}
+        <span className="font-mono text-xs" style={{ color: row.position <= 10 ? "var(--success)" : "var(--warning)" }}>
+          {row.position.toFixed(1)}
         </span>
       ),
     },
@@ -68,7 +54,7 @@ export default function LowCTR({ data }) {
       sortable: false,
       render: (row) => (
         <span className="text-[10px] px-2 py-1 rounded" style={{ background: "rgba(239,68,68,0.1)", color: "var(--danger)" }}>
-          {row.avgPosition <= 10 ? "Fix meta title/desc" : "Improve ranking + title"}
+          {row.position <= 10 ? "Optimize Title" : "Needs Backlinks"}
         </span>
       ),
     },
@@ -86,22 +72,21 @@ export default function LowCTR({ data }) {
         </div>
       </div>
 
-      {lowCtrPages.length > 0 && (
+      {keywords.length > 0 && (
         <div className="mb-4 p-3 rounded-lg border" style={{ background: "rgba(239,68,68,0.03)", borderColor: "rgba(239,68,68,0.15)" }}>
           <p className="text-xs" style={{ color: "var(--danger)" }}>
             <AlertTriangle className="w-3.5 h-3.5 inline mr-1.5 -mt-0.5" />
-            <strong>{lowCtrPages.length} pages</strong> are being shown in Google but getting below-average clicks.
-            Optimizing meta titles and descriptions can increase traffic without changing rankings.
+            <strong>{keywords.length} keywords</strong> have high impressions but low clicks. Optimizing meta titles can boost your CTR instantly.
           </p>
         </div>
       )}
 
-      {lowCtrPages.length === 0 ? (
+      {keywords.length === 0 ? (
         <div className="text-center py-12 text-sm" style={{ color: "var(--text-muted)" }}>
-          No low-CTR pages found. Either all pages are performing well or GSC data isn't matched for this period.
+          No low-CTR keywords found.
         </div>
       ) : (
-        <ArticleTable columns={columns} data={lowCtrPages} defaultSort={{ key: "impressions", direction: "desc" }} />
+        <ArticleTable columns={columns} data={keywords} defaultSort={{ key: "impressions", direction: "desc" }} />
       )}
     </div>
   );
