@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
+import uvicorn
 from ga4_service import (
     fetch_all_data,
     fetch_realtime_data,
@@ -250,3 +251,7 @@ async def get_gsc_low_ctr_keywords(brand: Optional[str] = Query(None)):
 def clear_cache():
     _cache.clear()
     return {"status": "cleared"}
+
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
