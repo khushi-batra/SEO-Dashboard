@@ -3,7 +3,7 @@
  * useArticles accepts a date string (YYYY-MM-DD) for the selected day.
  * useRealtime fetches live active users (auto-refreshes).
  */
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 
 const API_BASE = "http://localhost:8000";
 
@@ -34,36 +34,78 @@ export function useArticles(dateOrRange, brand = "all") {
   return { articles, loading };
 }
 
-export function useRealtime(brand = "all") {
-  const [realtime, setRealtime] = useState({ totalActive: 0, pages: [] });
+export function useRealtime(brand = "all", isActive = true) {
+  const [realtime, setRealtime] = useState(null); // null = never fetched yet
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false); // true only during manual refresh
 
-  const refresh = useCallback(async (isInitial = false) => {
-    if (isInitial) setLoading(true);
+  // Keep a ref to the latest brand so manual refresh always uses current value
+  const brandRef = React.useRef(brand);
+  brandRef.current = brand;
+
+  // Manual refresh — shows spinner, updates data, no skeleton (data already visible)
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
     let url = `${API_BASE}/api/realtime`;
-    if (brand && brand !== "all") {
-        url += `?brand=${encodeURIComponent(brand)}`;
+    if (brandRef.current && brandRef.current !== "all") {
+      url += `?brand=${encodeURIComponent(brandRef.current)}`;
     }
     try {
       const r = await fetch(url);
       const data = await r.json();
       setRealtime(data);
     } catch (e) {
-      // handle error silently for interval
+      // silent — manual refresh failure is non-critical
     } finally {
-      if (isInitial) setLoading(false);
+      setRefreshing(false);
     }
-  }, [brand]);
+  }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    refresh(true);
-    
-    const interval = setInterval(() => refresh(false), 5000); // Refresh every 5s
-    return () => clearInterval(interval);
-  }, [refresh]);
+    // Reset to null + loading on brand change — null means "no data yet for this brand"
+    // so skeleton stays visible until real data arrives
+    setRealtime(null);
+    setLoading(true);
 
-  return { realtime, refresh, loading };
+    const controller = new AbortController();
+
+    const fetchData = async (isFirst = false) => {
+      let url = `${API_BASE}/api/realtime`;
+      if (brand && brand !== "all") {
+        url += `?brand=${encodeURIComponent(brand)}`;
+      }
+      try {
+        const r = await fetch(url, { signal: controller.signal });
+        const data = await r.json();
+        setRealtime(data);         // set real data first
+        setLoading(false);         // then clear loading — no 0-flash possible
+      } catch (err) {
+        if (err.name !== "AbortError") {
+          console.warn("[useRealtime]", err);
+          if (isFirst) setLoading(false); // only unblock on error for initial fetch
+        }
+      }
+    };
+
+    fetchData(true);
+
+    // Only poll while the realtime tab is visible — saves tokens when user is on other tabs
+    if (!isActive) {
+      return () => controller.abort();
+    }
+
+    // 55-second interval — one brand, one active fetch, low token cost
+    const interval = setInterval(() => fetchData(false), 55000);
+
+    return () => {
+      clearInterval(interval);
+      controller.abort(); // cancel any in-flight fetch for the old brand
+    };
+  }, [brand, isActive]);
+
+  // Expose safe defaults — consumers must check `loading` before rendering numbers
+  const safeRealtime = realtime ?? { totalActive: 0, pages: [] };
+  return { realtime: safeRealtime, refresh, loading, refreshing };
 }
 
 export function useOverviewData(brand, range) {

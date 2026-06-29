@@ -79,7 +79,7 @@ export default function DashboardLayout() {
   
   // Always fetch 'all' articles so local filtering is instantaneous when switching blogs
   const { articles, loading: articlesLoading } = useArticles(fetchParam, "all");
-  const { realtime, refresh: refreshRealtime, loading: realtimeLoading } = useRealtime(activeBrandString);
+  const { realtime, refresh: refreshRealtime, loading: realtimeLoading, refreshing: realtimeRefreshing } = useRealtime(activeBrandString, activeTab === "realtime");
   const overviewData = useOverviewData(activeBrandString, fetchParam);
   const lowCtrData = useLowCTRData(activeBrandString);
 
@@ -87,6 +87,13 @@ export default function DashboardLayout() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setActiveTab("realtime");
   }, [activeBlog]);
+
+  const [chartRefreshKey, setChartRefreshKey] = useState(0);
+
+  const handleRealtimeRefresh = React.useCallback(async () => {
+    await refreshRealtime();
+    setChartRefreshKey(k => k + 1); // also re-fetch the area chart
+  }, [refreshRealtime]);
 
   const goToRealtime = () => setActiveTab("realtime");
 
@@ -115,7 +122,7 @@ export default function DashboardLayout() {
       case "overview":
         return <OverviewCharts data={filteredData} realtime={realtime} onGoToRealtime={goToRealtime} brand={activeBrandString} range={fetchParam} overviewData={overviewData} />;
       case "realtime":
-        return <RealtimeView realtime={realtime} onRefresh={refreshRealtime} todayData={filteredData} brand={activeBrandString} />;
+        return <RealtimeView realtime={realtime} onRefresh={handleRealtimeRefresh} refreshing={realtimeRefreshing} todayData={filteredData} brand={activeBrandString} loading={realtimeLoading} chartRefreshKey={chartRefreshKey} />;
       case "top-pages":
         return <TopPages data={filteredData} />;
       case "opportunities":
@@ -256,7 +263,10 @@ export default function DashboardLayout() {
 
       {/* Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-5 animate-in fade-in duration-500">
-        {(activeTab === "overview" && overviewData.loading) || (activeTab === "low-ctr" && lowCtrData.loading) || (activeTab === "realtime" && realtimeLoading) || articlesLoading ? (
+        {/* Realtime tab has its own inline skeletons — never block it with the global loader */}
+        {activeTab === "realtime" ? (
+          renderView()
+        ) : (activeTab === "overview" && overviewData.loading) || (activeTab === "low-ctr" && lowCtrData.loading) || articlesLoading ? (
           <SkeletonLoader />
         ) : (
           renderView()

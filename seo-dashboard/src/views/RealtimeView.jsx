@@ -9,7 +9,32 @@ import React, { useState, useMemo } from "react";
 import { Radio, RefreshCw, Users, Eye, Search, TrendingUp, Zap, Activity } from "lucide-react";
 import RealtimeAreaChart from "../components/RealtimeAreaChart";
 
-export default function RealtimeView({ realtime, onRefresh, todayData = [], brand }) {
+/** Inline skeleton pulse block — used while realtime data is loading */
+function StatSkeleton({ wide = false }) {
+  return (
+    <div className={`h-9 rounded-lg animate-pulse mx-auto ${wide ? "w-24" : "w-16"}`} style={{ background: "var(--bg-tertiary)" }} />
+  );
+}
+
+function RowSkeleton() {
+  return (
+    <div className="grid grid-cols-12 gap-2 items-center px-3 py-3 border-b animate-pulse" style={{ borderColor: "var(--border)" }}>
+      <div className="col-span-1 h-3 w-4 rounded" style={{ background: "var(--bg-tertiary)" }} />
+      <div className="col-span-7 space-y-1.5">
+        <div className="h-3 w-3/4 rounded" style={{ background: "var(--bg-tertiary)" }} />
+        <div className="h-2 w-1/2 rounded" style={{ background: "var(--bg-tertiary)" }} />
+      </div>
+      <div className="col-span-2 flex justify-end">
+        <div className="h-3 w-6 rounded" style={{ background: "var(--bg-tertiary)" }} />
+      </div>
+      <div className="col-span-2 flex justify-end">
+        <div className="h-3 w-12 rounded" style={{ background: "var(--bg-tertiary)" }} />
+      </div>
+    </div>
+  );
+}
+
+export default function RealtimeView({ realtime, onRefresh, todayData = [], brand, loading = false, refreshing = false, chartRefreshKey = 0 }) {
   const [pageSearch, setPageSearch] = useState("");
 
   const totalActive = realtime?.totalActive || 0;
@@ -46,23 +71,41 @@ export default function RealtimeView({ realtime, onRefresh, todayData = [], bran
                 <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>Across all properties • Auto-refreshes</p>
               </div>
             </div>
-            <button onClick={onRefresh} className="flex items-center gap-1.5 px-3 py-2 text-[11px] font-medium rounded-lg border transition hover:scale-105 active:scale-95" style={{ borderColor: "var(--border)", background: "var(--bg-tertiary)", color: "var(--text-secondary)" }}>
-              <RefreshCw className="w-3.5 h-3.5" /> Refresh
+            <button
+              onClick={onRefresh}
+              disabled={refreshing}
+              className="flex items-center gap-1.5 px-3 py-2 text-[11px] font-medium rounded-lg border transition hover:scale-105 active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100"
+              style={{ borderColor: "var(--border)", background: "var(--bg-tertiary)", color: "var(--text-secondary)" }}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`} />
+              {refreshing ? "Refreshing..." : "Refresh"}
             </button>
           </div>
 
-          {/* Numbers */}
+          {/* Numbers — skeleton while loading, real values once ready */}
           <div className="grid grid-cols-3 gap-6">
             <div className="text-center">
-              <p className="text-3xl font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>{totalActive.toLocaleString()}</p>
+              {loading ? (
+                <StatSkeleton wide />
+              ) : (
+                <p className="text-3xl font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>{totalActive.toLocaleString()}</p>
+              )}
               <p className="text-[10px] mt-1" style={{ color: "var(--text-muted)" }}>Active users in last 30 minutes</p>
             </div>
             <div className="text-center border-x" style={{ borderColor: "var(--border)" }}>
-              <p className="text-3xl font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>{pages.length}</p>
+              {loading ? (
+                <StatSkeleton />
+              ) : (
+                <p className="text-3xl font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>{pages.length}</p>
+              )}
               <p className="text-[10px] mt-1" style={{ color: "var(--text-muted)" }}>Pages being viewed</p>
             </div>
             <div className="text-center">
-              <p className="text-3xl font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>~{Math.max(1, Math.round(totalActive / 30))}</p>
+              {loading ? (
+                <StatSkeleton />
+              ) : (
+                <p className="text-3xl font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>~{Math.max(1, Math.round(totalActive / 30))}</p>
+              )}
               <p className="text-[10px] mt-1" style={{ color: "var(--text-muted)" }}>Avg users per minute</p>
             </div>
           </div>
@@ -70,7 +113,7 @@ export default function RealtimeView({ realtime, onRefresh, todayData = [], bran
       </div>
 
       {/* ═══════════════ STREAMING AREA CHART ═══════════════ */}
-      <RealtimeAreaChart brand={brand} />
+      <RealtimeAreaChart key={chartRefreshKey} brand={brand} />
 
       {/* ═══════════════ LIVE PAGES TABLE ═══════════════ */}
       <div className="rounded-xl border p-5" style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}>
@@ -78,9 +121,11 @@ export default function RealtimeView({ realtime, onRefresh, todayData = [], bran
           <div className="flex items-center gap-2">
             <Eye className="w-4 h-4" style={{ color: "var(--success)" }} />
             <p className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>Pages Active Right Now</p>
-            <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium" style={{ background: "rgba(16,185,129,0.1)", color: "var(--success)" }}>
-              {filteredPages.length} pages
-            </span>
+            {!loading && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium" style={{ background: "rgba(16,185,129,0.1)", color: "var(--success)" }}>
+                {filteredPages.length} pages
+              </span>
+            )}
           </div>
           <div className="relative w-44">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3" style={{ color: "var(--text-muted)" }} />
@@ -94,25 +139,27 @@ export default function RealtimeView({ realtime, onRefresh, todayData = [], bran
           <span className="col-span-2 text-[9px] uppercase font-medium text-right" style={{ color: "var(--text-muted)" }}>Active</span>
           <span className="col-span-2 text-[9px] uppercase font-medium text-right" style={{ color: "var(--text-muted)" }}>Brand</span>
         </div>
+
         <div className="max-h-[280px] overflow-y-auto">
-          {filteredPages.length > 0 ? filteredPages.map((p, i) => {
-            return (
-              <div key={i} className="grid grid-cols-12 gap-2 items-center px-3 py-2.5 border-b transition-colors hover:rounded-lg" style={{ borderColor: "var(--border)" }}>
-                <span className="col-span-1 text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>{i + 1}</span>
-                <div className="col-span-7 flex flex-col justify-center min-w-0">
-                  <p className="font-medium truncate text-xs" style={{ color: "var(--text-primary)" }}>{p.title}</p>
-                  {p.url && (
-                    <p className="text-[10px] truncate" style={{ color: "var(--text-muted)" }}>{p.url}</p>
-                  )}
-                </div>
-                <div className="col-span-2 flex items-center justify-end gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
-                  <span className="text-[11px] font-bold" style={{ color: "var(--text-primary)" }}>{p.activeUsers}</span>
-                </div>
-                <span className="col-span-2 text-[10px] text-right truncate" style={{ color: "var(--text-muted)" }}>{p.brand}</span>
+          {loading ? (
+            /* Skeleton rows while fetching */
+            [...Array(6)].map((_, i) => <RowSkeleton key={i} />)
+          ) : filteredPages.length > 0 ? filteredPages.map((p, i) => (
+            <div key={i} className="grid grid-cols-12 gap-2 items-center px-3 py-2.5 border-b transition-colors hover:rounded-lg" style={{ borderColor: "var(--border)" }}>
+              <span className="col-span-1 text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>{i + 1}</span>
+              <div className="col-span-7 flex flex-col justify-center min-w-0">
+                <p className="font-medium truncate text-xs" style={{ color: "var(--text-primary)" }}>{p.title}</p>
+                {p.url && (
+                  <p className="text-[10px] truncate" style={{ color: "var(--text-muted)" }}>{p.url}</p>
+                )}
               </div>
-            );
-          }) : (
+              <div className="col-span-2 flex items-center justify-end gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                <span className="text-[11px] font-bold" style={{ color: "var(--text-primary)" }}>{p.activeUsers}</span>
+              </div>
+              <span className="col-span-2 text-[10px] text-right truncate" style={{ color: "var(--text-muted)" }}>{p.brand}</span>
+            </div>
+          )) : (
             <div className="py-10 text-center">
               <Activity className="w-8 h-8 mx-auto mb-2 opacity-20" style={{ color: "var(--text-muted)" }} />
               <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>No active pages at this moment</p>

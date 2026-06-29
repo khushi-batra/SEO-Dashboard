@@ -6,10 +6,10 @@
  * 30 data points (minute 29 ago → minute 0 = now).
  * Refreshes every 15 seconds.
  */
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 
 const API_BASE = "http://localhost:8000";
-const REFRESH_INTERVAL = 5000; // 5 seconds
+const REFRESH_INTERVAL = 55000; // 55 seconds — reduces token usage under multi-user load
 
 function buildSplinePath(points) {
   if (points.length < 2) return "";
@@ -25,41 +25,64 @@ function buildSplinePath(points) {
 }
 
 export default function RealtimeAreaChart({ brand }) {
-  const [data, setData] = useState([]);
-
-  const fetchHistory = useCallback(() => {
-    let q = brand && brand !== "all" ? `?brand=${encodeURIComponent(brand)}` : "";
-    fetch(`${API_BASE}/api/realtime/history${q}`)
-      .then((r) => r.json())
-      .then((d) => {
-        const history = (d.history || []).map((h) => ({ value: h.users || h.value || 0 }));
-        setData(history);
-      })
-      .catch(() => {});
-  }, [brand]);
+  const [data, setData] = useState(null); // null = not yet fetched
 
   useEffect(() => {
+    // Reset to null on brand change — keeps skeleton up until real data arrives
+    setData(null);
+
+    const controller = new AbortController();
+
+    const fetchHistory = () => {
+      let q = brand && brand !== "all" ? `?brand=${encodeURIComponent(brand)}` : "";
+      fetch(`${API_BASE}/api/realtime/history${q}`, { signal: controller.signal })
+        .then((r) => r.json())
+        .then((d) => {
+          const history = (d.history || []).map((h) => ({ value: h.users || h.value || 0 }));
+          setData(history);
+        })
+        .catch((err) => {
+          if (err.name !== "AbortError") console.warn("[RealtimeChart]", err);
+        });
+    };
+
     fetchHistory();
     const interval = setInterval(fetchHistory, REFRESH_INTERVAL);
-    return () => clearInterval(interval);
-  }, [fetchHistory]);
 
-  // Display the raw API data — no overrides
-  const displayData = data;
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
+  }, [brand]);
 
-  // Need at least 2 points
-  if (displayData.length < 2) {
+  // Show skeleton while data is null (never arrived yet) or has fewer than 2 points
+  if (!data || data.length < 2) {
     return (
       <div className="rounded-2xl border p-5" style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}>
-        <p className="text-[10px] uppercase font-medium tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Active Users Per Minute</p>
-        <div className="flex items-center justify-center h-[140px]" style={{ color: "var(--text-muted)" }}>
-          <p className="text-xs">Loading per-minute data...</p>
+        {/* Header skeleton */}
+        <div className="flex items-center justify-between mb-4 animate-pulse">
+          <div>
+            <div className="h-2.5 w-32 rounded mb-2" style={{ background: "var(--bg-tertiary)" }} />
+            <div className="h-8 w-20 rounded" style={{ background: "var(--bg-tertiary)" }} />
+          </div>
+          <div className="text-right">
+            <div className="h-2.5 w-20 rounded mb-2" style={{ background: "var(--bg-tertiary)" }} />
+            <div className="h-4 w-12 rounded" style={{ background: "var(--bg-tertiary)" }} />
+          </div>
+        </div>
+        {/* Chart area skeleton */}
+        <div className="animate-pulse rounded-xl w-full h-[160px]" style={{ background: "var(--bg-tertiary)" }} />
+        {/* X-axis skeleton */}
+        <div className="flex justify-between mt-2 px-1 animate-pulse">
+          {["-30m", "-20m", "-10m", "now"].map((l) => (
+            <div key={l} className="h-2 w-6 rounded" style={{ background: "var(--bg-tertiary)" }} />
+          ))}
         </div>
       </div>
     );
   }
 
-  const values = displayData.map((d) => d.value);
+  const values = data.map((d) => d.value);
   const latestValue = values[values.length - 1] || 0;
   const maxValue = Math.max(...values, 1) * 1.1;
   const minValue = Math.min(...values.filter(v => v > 0)) * 0.8 || 0;
@@ -72,8 +95,8 @@ export default function RealtimeAreaChart({ brand }) {
   const PAD_BOTTOM = 5;
   const chartH = H - PAD_TOP - PAD_BOTTOM;
 
-  const points = displayData.map((d, i) => ({
-    x: (i / Math.max(displayData.length - 1, 1)) * W,
+  const points = data.map((d, i) => ({
+    x: (i / Math.max(data.length - 1, 1)) * W,
     y: PAD_TOP + chartH - ((d.value - minValue) / range) * chartH,
   }));
 
