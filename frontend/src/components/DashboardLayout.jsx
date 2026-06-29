@@ -289,7 +289,7 @@ export default function DashboardLayout() {
         {/* Realtime tab has its own inline skeletons — never block it with the global loader */}
         {activeTab === "realtime" ? (
           renderView()
-        ) : (activeTab === "overview" && overviewData.loading) || (activeTab === "low-ctr" && lowCtrData.loading) ? (
+        ) : articlesLoading || (activeTab === "overview" && overviewData.loading) || (activeTab === "low-ctr" && lowCtrData.loading) ? (
           <SkeletonLoader />
         ) : (
           renderView()
