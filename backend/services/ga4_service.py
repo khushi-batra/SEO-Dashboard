@@ -585,12 +585,12 @@ def _aggregate_query_rows(rows_list: list) -> dict:
     return agg
 
 
-def fetch_gsc_queries(brand_filter: str = None) -> list:
+def fetch_gsc_queries(brand_filter: str = None, start_date: str = None, end_date: str = None) -> list:
     site_urls = get_gsc_site_urls(brand_filter)
     if not site_urls:
         return []
-    end_dt = (date.today() - timedelta(days=3)).isoformat()
-    start_dt = (date.today() - timedelta(days=31)).isoformat()
+    start_dt = _parse_gsc_date(start_date, 31)
+    end_dt = _parse_gsc_date(end_date, 3)
 
     futures = {SHARED_POOL.submit(_fetch_gsc_site_queries, su, start_dt, end_dt, 30): su for su in site_urls}
     all_rows = [f.result() for f in as_completed(futures)]
@@ -601,12 +601,12 @@ def fetch_gsc_queries(brand_filter: str = None) -> list:
     return sorted(agg.values(), key=lambda x: x["clicks"], reverse=True)[:20]
 
 
-def fetch_gsc_low_ctr_keywords(brand_filter: str = None) -> list:
+def fetch_gsc_low_ctr_keywords(brand_filter: str = None, start_date: str = None, end_date: str = None) -> list:
     site_urls = get_gsc_site_urls(brand_filter)
     if not site_urls:
         return []
-    end_dt = (date.today() - timedelta(days=3)).isoformat()
-    start_dt = (date.today() - timedelta(days=31)).isoformat()
+    start_dt = _parse_gsc_date(start_date, 31)
+    end_dt = _parse_gsc_date(end_date, 3)
 
     futures = {SHARED_POOL.submit(_fetch_gsc_site_queries, su, start_dt, end_dt, 100): su for su in site_urls}
     all_rows = [f.result() for f in as_completed(futures)]

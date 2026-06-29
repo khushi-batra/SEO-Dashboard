@@ -228,15 +228,39 @@ async def get_timeline(date: Optional[str] = Query(None), range: Optional[str] =
 
 
 @app.get("/api/gsc/queries")
-async def get_gsc_queries(brand: Optional[str] = Query(None)):
-    cache_key = f"gsc_queries_{brand or 'all'}"
-    return await _async_cached_fetch(cache_key, fetch_gsc_queries, brand)
+async def get_gsc_queries(
+    brand: Optional[str] = Query(None),
+    range: Optional[str] = Query(None),
+    startDate: Optional[str] = Query(None),
+    endDate: Optional[str] = Query(None),
+):
+    if startDate and endDate:
+        start, end = startDate, endDate
+    elif range:
+        range_map = {"7days": "7daysAgo", "14days": "14daysAgo", "28days": "28daysAgo", "30days": "30daysAgo"}
+        start, end = range_map.get(range, "28daysAgo"), "today"
+    else:
+        start, end = "28daysAgo", "today"
+    cache_key = f"gsc_queries_{start}_{end}_{brand or 'all'}"
+    return await _async_cached_fetch(cache_key, fetch_gsc_queries, brand, start, end)
 
 
 @app.get("/api/gsc/low-ctr-keywords")
-async def get_gsc_low_ctr_keywords(brand: Optional[str] = Query(None)):
-    cache_key = f"gsc_low_ctr_{brand or 'all'}"
-    return await _async_cached_fetch(cache_key, fetch_gsc_low_ctr_keywords, brand)
+async def get_gsc_low_ctr_keywords(
+    brand: Optional[str] = Query(None),
+    range: Optional[str] = Query(None),
+    startDate: Optional[str] = Query(None),
+    endDate: Optional[str] = Query(None),
+):
+    if startDate and endDate:
+        start, end = startDate, endDate
+    elif range:
+        range_map = {"7days": "7daysAgo", "14days": "14daysAgo", "28days": "28daysAgo", "30days": "30daysAgo"}
+        start, end = range_map.get(range, "28daysAgo"), "today"
+    else:
+        start, end = "28daysAgo", "today"
+    cache_key = f"gsc_low_ctr_{start}_{end}_{brand or 'all'}"
+    return await _async_cached_fetch(cache_key, fetch_gsc_low_ctr_keywords, brand, start, end)
 
 
 @app.get("/api/cache/clear")

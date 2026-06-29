@@ -93,7 +93,7 @@ export default function DashboardLayout() {
   const { articles, loading: articlesLoading } = useArticles(fetchParam, "all");
   const { realtime, refresh: refreshRealtime, loading: realtimeLoading, refreshing: realtimeRefreshing } = useRealtime(activeBrandString, activeTab === "realtime");
   const overviewData = useOverviewData(activeBrandString, fetchParam, activeTab === "overview");
-  const lowCtrData = useLowCTRData(activeBrandString, activeTab === "low-ctr");
+  const lowCtrData = useLowCTRData(activeBrandString, fetchParam, activeTab === "low-ctr");
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
