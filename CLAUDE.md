@@ -23,6 +23,58 @@ npm run preview    # preview production build
 
 There are no automated tests. Debug/validation scripts live in `backend/test_*.py` and root-level `gsc_debug.py` / `debug_gsc_enrich.py` — run them directly with `python <file>`.
 
+## File map
+
+### Backend (`backend/`)
+
+| File | Provides |
+|------|----------|
+| `main.py` | FastAPI app entry point. All 9 REST endpoints (`/api/articles`, `/api/realtime`, `/api/realtime/history`, `/api/metrics/summary`, `/api/channels`, `/api/timeline`, `/api/gsc/queries`, `/api/gsc/low-ctr-keywords`, `/api/cache/clear`). In-memory cache with TTL + in-flight deduplication. Startup cache warmup. |
+| `ga4_service.py` | Entire data engine. GA4 client singleton, thread-local GSC service, shared `SHARED_POOL` (24-worker ThreadPoolExecutor). All fetch functions: `fetch_all_data`, `fetch_realtime_data`, `fetch_realtime_per_minute`, `fetch_sessions_by_channel`, `fetch_user_activity_timeline`, `fetch_gsc_queries`, `fetch_gsc_low_ctr_keywords`. Property/brand/domain maps. |
+| `data.py` | 30-article mock dataset — fallback for local dev without credentials. |
+| `requirements.txt` | Python dependencies (fastapi, uvicorn, google-analytics-data, google-analytics-admin, google-api-python-client, google-auth, python-dotenv). |
+| `fetch_top_pages.py` | CLI utility — fetches top pages from a single GA4 property for debugging. |
+| `check_ga4_access.py` | CLI utility — verifies service account has correct GA4 access. |
+| `fetch_data.py` | Data aggregation helpers (used by test scripts). |
+| `get_realtime_meta.py` | Metadata helpers for realtime page resolution. |
+| `test_*.py` | One-off debug scripts — not a test suite. Run individually with `python backend/test_<name>.py`. |
+
+### Frontend (`frontend/`)
+
+| File | Provides |
+|------|----------|
+| `index.html` | HTML entry point — mounts `#root`, loads `src/main.jsx`. |
+| `src/main.jsx` | React entry point — renders `<App />` wrapped in `<ThemeProvider>`. |
+| `src/App.jsx` | Root component — renders `<DashboardLayout>`. |
+| `src/index.css` | Tailwind import + all CSS custom property definitions for the theme system (`--bg-primary`, `--text-primary`, etc.) for both `:root` (light) and `.dark` (dark). |
+| `src/hooks/useArticles.js` | All data-fetching hooks: `useArticles`, `useRealtime`, `useOverviewData`, `useLowCTRData`. Single source of truth for API calls. Hardcodes `API_BASE = http://localhost:8000`. |
+| `src/components/DashboardLayout.jsx` | Main shell — tab bar (7 tabs), brand filter pills (13 brands), date range picker, global search, theme toggle. Controls lazy rendering of views. |
+| `src/views/RealtimeView.jsx` | Live users hero, per-minute area chart, live pages table, today's traffic summary. Consumes `useRealtime`. |
+| `src/views/OverviewCharts.jsx` | 28-day metrics cards, user activity timeline, sessions-by-channel bar chart, top pages list, top search queries. Consumes `useOverviewData`. |
+| `src/views/TopPages.jsx` | All articles sorted by page views with GA4 + GSC columns. Consumes `useArticles`. |
+| `src/views/OpportunityPages.jsx` | Striking-distance filter (position 5–20, impressions > 500). Consumes `useArticles`. |
+| `src/views/LowCTR.jsx` | Keywords with CTR < 5% and impressions > 50. Consumes `useLowCTRData`. |
+| `src/views/MonetizationGaps.jsx` | High-traffic low-engagement articles (bounce signal). Consumes `useArticles`. |
+| `src/views/EditorQueues.jsx` | Action items derived from engagement + CTR signals. Consumes `useArticles`. |
+| `src/components/ArticleTable.jsx` | Reusable sortable table with clickable column headers. |
+| `src/components/MetricCard.jsx` | KPI card (icon + label + value). |
+| `src/components/RealtimeAreaChart.jsx` | Recharts AreaChart for per-minute active user data. |
+| `src/components/SkeletonLoader.jsx` | Loading skeleton placeholder. |
+| `src/context/ThemeContext.jsx` | Dark/light mode state + localStorage persistence. Toggles `.dark` class on `document.documentElement`. |
+| `src/data/mockSEOData.js` | Fallback mock data for frontend-only dev. |
+| `package.json` | Dependencies: react, react-dom, recharts, lucide-react, react-datepicker. Dev: vite, @tailwindcss/vite, eslint. |
+| `vite.config.js` | Vite config — port 5174, `strictPort: true`. |
+| `eslint.config.js` | ESLint rules (react-hooks, react-refresh). |
+
+### Root-level debug scripts
+
+| File | Provides |
+|------|----------|
+| `gsc_debug.py` | GSC API debugging — inspect raw search console data. |
+| `debug_gsc_enrich.py` | Debug GA4↔GSC URL matching and enrichment. |
+| `test_ga4.py` | Verify GA4 API connectivity and response shape. |
+| `test_match.py` | Test URL path matching logic between GA4 and GSC. |
+
 ## Architecture
 
 ### Monorepo structure

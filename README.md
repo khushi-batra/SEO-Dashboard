@@ -6,8 +6,8 @@ A centralized multi-blog SEO Dashboard that connects to GA4 and Google Search Co
 
 ```
 SEO-Dashboard/
-├── backend/           → Python (FastAPI) — serves GA4 + GSC data via REST API
-├── seo-dashboard/     → React (Vite + Tailwind) — frontend dashboard
+├── backend/     → Python (FastAPI) — serves GA4 + GSC data via REST API
+├── frontend/    → React (Vite + Tailwind) — frontend dashboard
 ├── .gitignore
 └── README.md
 ```
@@ -34,7 +34,7 @@ uvicorn main:app --reload --port 8000
 ### 2. Frontend
 
 ```bash
-cd seo-dashboard
+cd frontend
 npm install
 npm run dev
 ```
