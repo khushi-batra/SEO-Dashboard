@@ -320,36 +320,43 @@ def _fetch_articles_for_property(prop_id: str, start_date: str, end_date: str) -
     domain = PROPERTY_DOMAINS.get(prop_id, "")
     client = _get_ga4_client()
     results = []
+    offset = 0
+    page_size = 10000
     try:
-        response = client.run_report(RunReportRequest(
-            property=f"properties/{prop_id}",
-            dimensions=[Dimension(name="pagePath"), Dimension(name="pageTitle")],
-            metrics=[
-                Metric(name="screenPageViews"),
-                Metric(name="activeUsers"),
-                Metric(name="averageSessionDuration"),
-                Metric(name="sessions"),
-                Metric(name="newUsers"),
-            ],
-            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-            order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
-            limit=100,  # top 100 per property; 10 properties = up to 1000 unique articles
-        ))
-        for row in response.rows:
-            page_path = row.dimension_values[0].value
-            page_title = row.dimension_values[1].value
-            if page_path in ("/", "/blog/", "/blog", "/articles/", "/articles"):
-                continue
-            url = f"{domain}{page_path}"
-            title = page_title if page_title and page_title != "(not set)" else _path_to_title(page_path)
-            results.append({
-                "brand": brand, "domain": domain, "url": url, "title": title,
-                "pageViews": int(row.metric_values[0].value),
-                "users": int(row.metric_values[1].value),
-                "avgDuration": float(row.metric_values[2].value),
-                "sessions": int(row.metric_values[3].value),
-                "newUsers": int(row.metric_values[4].value),
-            })
+        while True:
+            response = client.run_report(RunReportRequest(
+                property=f"properties/{prop_id}",
+                dimensions=[Dimension(name="pagePath"), Dimension(name="pageTitle")],
+                metrics=[
+                    Metric(name="screenPageViews"),
+                    Metric(name="activeUsers"),
+                    Metric(name="averageSessionDuration"),
+                    Metric(name="sessions"),
+                    Metric(name="newUsers"),
+                ],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
+                limit=page_size,
+                offset=offset,
+            ))
+            for row in response.rows:
+                page_path = row.dimension_values[0].value
+                page_title = row.dimension_values[1].value
+                if page_path in ("/", "/blog/", "/blog", "/articles/", "/articles"):
+                    continue
+                url = f"{domain}{page_path}"
+                title = page_title if page_title and page_title != "(not set)" else _path_to_title(page_path)
+                results.append({
+                    "brand": brand, "domain": domain, "url": url, "title": title,
+                    "pageViews": int(row.metric_values[0].value),
+                    "users": int(row.metric_values[1].value),
+                    "avgDuration": float(row.metric_values[2].value),
+                    "sessions": int(row.metric_values[3].value),
+                    "newUsers": int(row.metric_values[4].value),
+                })
+            offset += len(response.rows)
+            if not response.rows or offset >= response.row_count:
+                break
     except Exception as e:
         print(f"[GA4 Error] {prop_id}: {e}")
     return results
@@ -390,20 +397,30 @@ def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today", brand
 
 # ─── GSC Enrichment ───────────────────────────────────────────────────────────
 
-def _fetch_gsc_site(site_url: str, start_dt: str, end_dt: str, row_limit: int = 1000) -> list:
-    """Fetch GSC page data for one site. Hard cap at 1000 rows — enough for enrichment without bloat."""
+def _fetch_gsc_site(site_url: str, start_dt: str, end_dt: str) -> list:
     service = _get_gsc_service()
+    all_rows = []
+    start_row = 0
     try:
-        response = service.searchanalytics().query(
-            siteUrl=site_url,
-            body={
-                "startDate": start_dt,
-                "endDate": end_dt,
-                "dimensions": ["page"],
-                "rowLimit": min(row_limit, 1000),
-            },
-        ).execute()
-        return response.get("rows", [])
+        while True:
+            response = service.searchanalytics().query(
+                siteUrl=site_url,
+                body={
+                    "startDate": start_dt,
+                    "endDate": end_dt,
+                    "dimensions": ["page"],
+                    "rowLimit": 1000,
+                    "startRow": start_row,
+                },
+            ).execute()
+            rows = response.get("rows", [])
+            if not rows:
+                break
+            all_rows.extend(rows)
+            start_row += len(rows)
+            if len(rows) < 1000:
+                break
+        return all_rows
     except Exception as e:
         print(f"[GSC Error] {site_url}: {e}")
         return []
