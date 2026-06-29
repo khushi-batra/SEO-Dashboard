@@ -3,7 +3,7 @@
  * Tab order: Overview, Realtime, Top Pages, Opportunities, Low CTR, Monetization Gaps, Brands, Editor Queue
  * Date filter: Calendar-based date picker for historical data
  */
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo } from "react";
 import DatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
 import {
@@ -94,11 +94,6 @@ export default function DashboardLayout() {
   const { realtime, refresh: refreshRealtime, loading: realtimeLoading, refreshing: realtimeRefreshing } = useRealtime(activeBrandString, activeTab === "realtime");
   const overviewData = useOverviewData(activeBrandString, fetchParam, activeTab === "overview");
   const lowCtrData = useLowCTRData(activeBrandString, fetchParam, activeTab === "low-ctr");
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setActiveTab("realtime");
-  }, [activeBlog]);
 
   const [chartRefreshKey, setChartRefreshKey] = useState(0);
 
@@ -243,7 +238,7 @@ export default function DashboardLayout() {
               return (
                 <button
                   key={blog.id}
-                  onClick={() => setActiveBlog(blog.id)}
+                  onClick={() => { setActiveBlog(blog.id); setActiveTab("realtime"); }}
                   className="px-3 py-1.5 text-[11px] font-medium rounded-full whitespace-nowrap transition-all"
                   style={{
                     background: isActive ? "var(--accent)" : "var(--bg-tertiary)",

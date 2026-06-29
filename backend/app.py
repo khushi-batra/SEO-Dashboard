@@ -11,13 +11,17 @@ To run:
 """
 
 import os
+import re
 import time
+import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from typing import Optional
 from services.ga4_service import (
+    SHARED_POOL,
     fetch_all_data,
     fetch_realtime_data,
     fetch_realtime_per_minute,
@@ -26,6 +30,23 @@ from services.ga4_service import (
     fetch_gsc_queries,
     fetch_gsc_low_ctr_keywords,
 )
+
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _validate_dates(*pairs):
+    """Raise 400 if any provided date string doesn't match YYYY-MM-DD."""
+    for value, name in pairs:
+        if value and not _DATE_RE.match(value):
+            raise HTTPException(status_code=400, detail=f"Invalid {name}: must be YYYY-MM-DD")
+
 
 app = FastAPI(title="Adda247 SEO Matrix API", version="3.0.0")
 
@@ -46,10 +67,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.exception_handler(Exception)
+async def _global_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled error on %s %s: %s", request.method, request.url, exc, exc_info=True)
+    return JSONResponse(status_code=500, content={"error": "Internal server error"})
+
+
 # ─── Cache ────────────────────────────────────────────────────────────────────
 _cache: dict = {}
 _cache_in_flight: dict = {}   # key → asyncio.Event, prevents duplicate fetches
 CACHE_TTL = 3600
+CACHE_MAX_ENTRIES = 200
 
 
 async def _async_cached_fetch(key: str, fetcher, *args):
@@ -75,9 +103,18 @@ async def _async_cached_fetch(key: str, fetcher, *args):
         loop = asyncio.get_running_loop()
         data = await loop.run_in_executor(_thread_pool, fetcher, *args)
         _cache[key] = {"data": data, "ts": time.time()}
+        # Evict expired entries first; if still over limit, drop oldest by insertion order
+        now2 = time.time()
+        expired = [k for k, v in _cache.items() if (now2 - v["ts"]) >= CACHE_TTL]
+        for k in expired:
+            _cache.pop(k, None)
+        if len(_cache) > CACHE_MAX_ENTRIES:
+            overflow = len(_cache) - CACHE_MAX_ENTRIES
+            for k in list(_cache.keys())[:overflow]:
+                _cache.pop(k, None)
         return data
     except Exception as e:
-        print(f"[Cache fetch error] {key}: {e}")
+        logger.error("Cache fetch error for %s: %s", key, e)
         raise
     finally:
         # Always signal waiters and clean up, even on error
@@ -96,11 +133,11 @@ def root():
 async def warm_up_cache():
     async def _warm(cache_key, fetcher, *args):
         try:
-            print(f"[Startup] Warming cache: {cache_key}")
+            logger.info("Startup: warming %s", cache_key)
             await _async_cached_fetch(cache_key, fetcher, *args)
-            print(f"[Startup] Done: {cache_key}")
+            logger.info("Startup: done %s", cache_key)
         except Exception as e:
-            print(f"[Startup] Warm-up failed for {cache_key} (non-fatal): {e}")
+            logger.warning("Startup: warm-up failed for %s (non-fatal): %s", cache_key, e)
 
     asyncio.create_task(_warm("articles_28daysAgo_today_all", fetch_all_data, "28daysAgo", "today", None))
     asyncio.create_task(_warm("articles_today_today_all", fetch_all_data, "today", "today", None))
@@ -142,6 +179,7 @@ async def get_articles(
     brand: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
 ):
+    _validate_dates((startDate, "startDate"), (endDate, "endDate"))
     from datetime import date as dt_date
     if startDate and endDate:
         # Custom date range from the frontend range picker
@@ -198,6 +236,7 @@ async def get_summary(date: Optional[str] = Query(None), range: Optional[str] = 
 
 @app.get("/api/channels")
 async def get_channels(date: Optional[str] = Query(None), range: Optional[str] = Query(None), startDate: Optional[str] = Query(None), endDate: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
+    _validate_dates((startDate, "startDate"), (endDate, "endDate"))
     from datetime import date as dt_date
     if startDate and endDate:
         start, end = startDate, endDate
@@ -217,6 +256,7 @@ async def get_channels(date: Optional[str] = Query(None), range: Optional[str] =
 
 @app.get("/api/timeline")
 async def get_timeline(date: Optional[str] = Query(None), range: Optional[str] = Query(None), startDate: Optional[str] = Query(None), endDate: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
+    _validate_dates((startDate, "startDate"), (endDate, "endDate"))
     from datetime import date as dt_date
     if startDate and endDate:
         start, end = startDate, endDate
@@ -241,6 +281,7 @@ async def get_gsc_queries(
     startDate: Optional[str] = Query(None),
     endDate: Optional[str] = Query(None),
 ):
+    _validate_dates((startDate, "startDate"), (endDate, "endDate"))
     if startDate and endDate:
         start, end = startDate, endDate
     elif range:
@@ -259,6 +300,7 @@ async def get_gsc_low_ctr_keywords(
     startDate: Optional[str] = Query(None),
     endDate: Optional[str] = Query(None),
 ):
+    _validate_dates((startDate, "startDate"), (endDate, "endDate"))
     if startDate and endDate:
         start, end = startDate, endDate
     elif range:
@@ -274,6 +316,12 @@ async def get_gsc_low_ctr_keywords(
 def clear_cache():
     _cache.clear()
     return {"status": "cleared"}
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    SHARED_POOL.shutdown(wait=False)
+    _thread_pool.shutdown(wait=False)
 
 
 if __name__ == "__main__":

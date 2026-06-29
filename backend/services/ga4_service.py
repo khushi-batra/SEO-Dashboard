@@ -12,6 +12,7 @@ Architecture:
 
 import os
 import hashlib
+import logging
 import threading
 from datetime import date, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -32,6 +33,7 @@ from googleapiclient.discovery import build
 load_dotenv(override=True)
 
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
+logger = logging.getLogger(__name__)
 
 # ─── Shared singletons ────────────────────────────────────────────────────────
 _ga4_client: BetaAnalyticsDataClient = None
@@ -123,7 +125,6 @@ GSC_DOMAIN_BRAND_MAP = {
 
 
 def get_gsc_site_urls(brand_filter: str = None) -> list:
-    load_dotenv(override=True)
     urls = []
     for k, v in os.environ.items():
         if k.startswith("GSC_SITE_URL") and v.strip():
@@ -181,6 +182,17 @@ def _parse_gsc_date(d_str, default_days_ago):
 
 _GLOBAL_URL_MAP: dict = {}
 _url_map_lock = threading.Lock()
+_URL_MAP_MAX = 50_000
+
+
+def _url_map_update(entries: dict):
+    """Thread-safe bulk update with insertion-order eviction when over cap."""
+    with _url_map_lock:
+        _GLOBAL_URL_MAP.update(entries)
+        if len(_GLOBAL_URL_MAP) > _URL_MAP_MAX:
+            overflow = len(_GLOBAL_URL_MAP) - _URL_MAP_MAX
+            for key in list(_GLOBAL_URL_MAP.keys())[:overflow]:
+                del _GLOBAL_URL_MAP[key]
 
 
 def _fetch_realtime_total(prop_id: str) -> int:
@@ -194,7 +206,7 @@ def _fetch_realtime_total(prop_id: str) -> int:
         ))
         return int(resp.rows[0].metric_values[0].value) if resp.rows else 0
     except Exception as e:
-        print(f"[Realtime Total Error] {prop_id}: {e}")
+        logger.error("Realtime total error for %s: %s", prop_id, e)
         return 0
 
 
@@ -243,8 +255,7 @@ def _fetch_realtime_pages(prop_id: str) -> list:
                     clean = t.split("-")[0].split("|")[0].strip().lower()
                     if clean:
                         local_map[clean] = full_url
-            with _url_map_lock:
-                _GLOBAL_URL_MAP.update(local_map)
+            _url_map_update(local_map)
             extra = {}
             for p in pages:
                 if not p["url"]:
@@ -256,10 +267,9 @@ def _fetch_realtime_pages(prop_id: str) -> list:
                     if p["url"]:
                         extra[key] = p["url"]
             if extra:
-                with _url_map_lock:
-                    _GLOBAL_URL_MAP.update(extra)
+                _url_map_update(extra)
     except Exception as e:
-        print(f"[Realtime Pages Error] {prop_id}: {e}")
+        logger.error("Realtime pages error for %s: %s", prop_id, e)
     return pages
 
 
@@ -277,11 +287,15 @@ def fetch_realtime_data(brand_filter: str = None) -> dict:
         all_futures[SHARED_POOL.submit(_fetch_realtime_pages, pid)] = ("pages", pid)
 
     for future in as_completed(all_futures):
-        kind, _ = all_futures[future]
-        if kind == "total":
-            total_active += future.result()
-        else:
-            all_pages.extend(future.result())
+        kind, pid = all_futures[future]
+        try:
+            result = future.result()
+            if kind == "total":
+                total_active += result
+            else:
+                all_pages.extend(result)
+        except Exception as e:
+            logger.error("Realtime future failed (%s, %s): %s", kind, pid, e)
 
     all_pages.sort(key=lambda x: x["activeUsers"], reverse=True)
     return {"totalActive": total_active, "pages": all_pages[:30]}
@@ -302,7 +316,7 @@ def _fetch_realtime_minute_for_property(prop_id: str) -> dict:
             u = int(row.metric_values[0].value)
             minute_totals[m] = minute_totals.get(m, 0) + u
     except Exception as e:
-        print(f"[Realtime PerMinute Error] {prop_id}: {e}")
+        logger.error("Realtime per-minute error for %s: %s", prop_id, e)
     return minute_totals
 
 
@@ -313,8 +327,11 @@ def fetch_realtime_per_minute(brand_filter: str = None) -> list:
 
     futures = {SHARED_POOL.submit(_fetch_realtime_minute_for_property, pid): pid for pid in prop_ids}
     for future in as_completed(futures):
-        for minute, users in future.result().items():
-            combined[minute] = combined.get(minute, 0) + users
+        try:
+            for minute, users in future.result().items():
+                combined[minute] = combined.get(minute, 0) + users
+        except Exception as e:
+            logger.error("Realtime per-minute future failed: %s", e)
 
     return [{"minute": m, "users": combined.get(m, 0)} for m in range(29, -1, -1)]
 
@@ -364,43 +381,8 @@ def _fetch_articles_for_property(prop_id: str, start_date: str, end_date: str) -
             if not response.rows or offset >= response.row_count:
                 break
     except Exception as e:
-        print(f"[GA4 Error] {prop_id}: {e}")
+        logger.error("GA4 fetch error for %s: %s", prop_id, e)
     return results
-
-
-def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today", brand_filter: str = None) -> list:
-    prop_ids = _get_property_ids(brand_filter)
-    seen_urls = {}
-
-    futures = {SHARED_POOL.submit(_fetch_articles_for_property, pid, start_date, end_date): pid for pid in prop_ids}
-    for future in as_completed(futures):
-        url_entries = {}
-        for row in future.result():
-            url, title, domain, views = row["url"], row["title"], row["domain"], row["pageViews"]
-            url_entries[title.strip().lower()] = url
-            url_entries[_path_to_title(url.replace(domain, "")).strip().lower()] = url
-            clean_t = title.split("-")[0].split("|")[0].strip().lower()
-            if clean_t:
-                url_entries[clean_t] = url
-            if url in seen_urls:
-                if views > seen_urls[url]["pageViews"]:
-                    seen_urls[url].update({
-                        "pageViews": views, "users": row["users"], "avgDuration": row["avgDuration"],
-                        "sessions": row["sessions"], "newUsers": row["newUsers"], "brand": row["brand"],
-                    })
-                continue
-            seen_urls[url] = {
-                "id": _generate_id(url), "title": title, "url": url, "brand": row["brand"],
-                "pageViews": views, "users": row["users"], "newUsers": row["newUsers"],
-                "sessions": row["sessions"], "avgDuration": row["avgDuration"],
-                "clicks": 0, "impressions": 0, "avgPosition": 0, "ctr": 0,
-            }
-        with _url_map_lock:
-            _GLOBAL_URL_MAP.update(url_entries)
-
-    articles = sorted(seen_urls.values(), key=lambda a: a["pageViews"], reverse=True)
-    print(f"[GA4] {len(articles)} articles from {len(prop_ids)} properties (parallel)")
-    return articles
 
 
 # ─── GSC Enrichment ───────────────────────────────────────────────────────────
@@ -430,7 +412,7 @@ def _fetch_gsc_site(site_url: str, start_dt: str, end_dt: str) -> list:
                 break
         return all_rows
     except Exception as e:
-        print(f"[GSC Error] {site_url}: {e}")
+        logger.error("GSC fetch error for %s: %s", site_url, e)
         return []
 
 
@@ -443,7 +425,7 @@ def _fetch_gsc_site_queries(site_url: str, start_dt: str, end_dt: str, row_limit
         ).execute()
         return response.get("rows", [])
     except Exception as e:
-        print(f"[GSC Queries Error] {site_url}: {e}")
+        logger.error("GSC queries error for %s: %s", site_url, e)
         return []
 
 
@@ -477,7 +459,6 @@ def _apply_gsc_map(articles: list, gsc_map: dict) -> list:
     if not gsc_map:
         return articles
     matched = 0
-    from urllib.parse import urlparse
     for article in articles:
         parsed = urlparse(article["url"])
         rel = parsed.path + (f"?{parsed.query}" if parsed.query else "")
@@ -491,7 +472,7 @@ def _apply_gsc_map(articles: list, gsc_map: dict) -> list:
                 "ctr": round((d["ctr"] / d["count"]) * 100, 2),
             })
             matched += 1
-    print(f"[GSC] Enriched {matched}/{len(articles)} GA4 articles with GSC data")
+    logger.info("GSC: enriched %d/%d articles", matched, len(articles))
     return articles
 
 
@@ -526,7 +507,7 @@ def fetch_sessions_by_channel(start_date="28daysAgo", end_date="today", brand_fi
             for row in response.rows:
                 rows.append((row.dimension_values[0].value, int(row.metric_values[0].value), int(row.metric_values[1].value)))
         except Exception as e:
-            print(f"[Channel Error] {prop_id}: {e}")
+            logger.error("Channel fetch error for %s: %s", prop_id, e)
         return rows
 
     futures = {SHARED_POOL.submit(_fetch_one, pid): pid for pid in prop_ids}
@@ -562,7 +543,7 @@ def fetch_user_activity_timeline(start_date="28daysAgo", end_date="today", brand
                 rows.append((f"{d[:4]}-{d[4:6]}-{d[6:8]}", int(row.metric_values[0].value),
                               int(row.metric_values[1].value), int(row.metric_values[2].value)))
         except Exception as e:
-            print(f"[Timeline Error] {prop_id}: {e}")
+            logger.error("Timeline fetch error for %s: %s", prop_id, e)
         return rows
 
     futures = {SHARED_POOL.submit(_fetch_one, pid): pid for pid in prop_ids}
@@ -641,7 +622,7 @@ def fetch_all_data(start_date="30daysAgo", end_date="today", brand_filter: str =
     GA4 articles + GSC data fetched in TRUE PARALLEL using the shared pool.
     No nested ThreadPoolExecutors — one pool does everything.
     """
-    print(f"[Fetch] {start_date} → {end_date} | brand={brand_filter}")
+    logger.info("Fetch: %s → %s | brand=%s", start_date, end_date, brand_filter)
 
     site_urls = get_gsc_site_urls(brand_filter)
     start_dt = _parse_gsc_date(start_date, 31)
@@ -688,10 +669,9 @@ def fetch_all_data(start_date="30daysAgo", end_date="today", brand_filter: str =
             "sessions": row["sessions"], "avgDuration": row["avgDuration"],
             "clicks": 0, "impressions": 0, "avgPosition": 0, "ctr": 0,
         }
-    with _url_map_lock:
-        _GLOBAL_URL_MAP.update(url_entries)
+    _url_map_update(url_entries)
     articles = sorted(seen_urls.values(), key=lambda a: a["pageViews"], reverse=True)
-    print(f"[GA4] {len(articles)} articles from {len(prop_ids)} properties")
+    logger.info("GA4: %d articles from %d properties", len(articles), len(prop_ids))
 
     # Build GSC map from collected rows
     gsc_map = {}
