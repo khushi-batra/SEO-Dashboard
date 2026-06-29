@@ -16,7 +16,6 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
-import uvicorn
 from ga4_service import (
     fetch_all_data,
     fetch_realtime_data,
@@ -88,10 +87,6 @@ def root():
 
 @app.on_event("startup")
 async def warm_up_cache():
-    """
-    Pre-warm the most-used date ranges in the background so the first request
-    for any of them is instant. Runs concurrently — does not block server startup.
-    """
     async def _warm(cache_key, fetcher, *args):
         try:
             print(f"[Startup] Warming cache: {cache_key}")
@@ -100,15 +95,12 @@ async def warm_up_cache():
         except Exception as e:
             print(f"[Startup] Warm-up failed for {cache_key} (non-fatal): {e}")
 
-    # Articles — three most common date ranges
     asyncio.create_task(_warm("articles_28daysAgo_today_all", fetch_all_data, "28daysAgo", "today", None))
     asyncio.create_task(_warm("articles_today_today_all", fetch_all_data, "today", "today", None))
     asyncio.create_task(_warm("articles_7daysAgo_today_all", fetch_all_data, "7daysAgo", "today", None))
-    # Overview tab — channels, timeline, and GSC queries (always cold without this)
     asyncio.create_task(_warm("channels_28daysAgo_today_all", fetch_sessions_by_channel, "28daysAgo", "today", None))
     asyncio.create_task(_warm("timeline_28daysAgo_today_all", fetch_user_activity_timeline, "28daysAgo", "today", None))
     asyncio.create_task(_warm("gsc_queries_all", fetch_gsc_queries, None))
-    # Low CTR tab
     asyncio.create_task(_warm("gsc_low_ctr_all", fetch_gsc_low_ctr_keywords, None))
 
 
@@ -251,7 +243,3 @@ async def get_gsc_low_ctr_keywords(brand: Optional[str] = Query(None)):
 def clear_cache():
     _cache.clear()
     return {"status": "cleared"}
-
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

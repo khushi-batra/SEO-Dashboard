@@ -35,8 +35,12 @@ SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 
 # ─── Shared singletons ────────────────────────────────────────────────────────
 _ga4_client: BetaAnalyticsDataClient = None
-_gsc_service = None
 _client_lock = threading.Lock()
+
+# Thread-local GSC service — googleapiclient is NOT thread-safe for concurrent
+# requests; sharing one instance across threads corrupts SSL state (bad record MAC).
+# Each worker thread gets its own service + HTTP connection pool.
+_thread_local = threading.local()
 
 # Single shared pool — no nested pools anywhere in this module
 SHARED_POOL = ThreadPoolExecutor(max_workers=24)
@@ -70,14 +74,10 @@ def _get_ga4_client() -> BetaAnalyticsDataClient:
 
 
 def _get_gsc_service():
-    global _gsc_service
-    if _gsc_service is not None:
-        return _gsc_service
-    with _client_lock:
-        if _gsc_service is None:
-            creds = _build_credentials(scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
-            _gsc_service = build("searchconsole", "v1", credentials=creds)
-    return _gsc_service
+    if not hasattr(_thread_local, "gsc_service"):
+        creds = _build_credentials(scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
+        _thread_local.gsc_service = build("searchconsole", "v1", credentials=creds, cache_discovery=False)
+    return _thread_local.gsc_service
 
 
 # ─── Config maps ──────────────────────────────────────────────────────────────
