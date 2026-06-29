@@ -8,7 +8,7 @@ import DatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
 import {
   Search, Sun, Moon, BarChart3, Radio, Zap, Target,
-  TrendingDown, ShoppingCart, Building2, ClipboardList, Calendar,
+  TrendingDown, ShoppingCart, ClipboardList, Calendar,
 } from "lucide-react";
 import { useArticles, useRealtime, useOverviewData, useLowCTRData } from "../hooks/useArticles";
 import { useTheme } from "../context/ThemeContext";
@@ -66,22 +66,34 @@ const blogBrandMap = {
 export default function DashboardLayout() {
   const [activeTab, setActiveTab] = useState("realtime");
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedDate, setSelectedDate] = useState(new Date()); // Default: today's date shown
   const [activeBlog, setActiveBlog] = useState("all");
   const { theme, toggleTheme } = useTheme();
 
   const [dateRange, setDateRange] = useState("28days");
+  // For custom range: [startDate, endDate] both as Date objects
+  const [customRange, setCustomRange] = useState([null, null]);
+  const [customStart, customEnd] = customRange;
 
-  const dateStr = selectedDate.toISOString().split("T")[0];
-  const fetchParam = dateRange === "custom" ? dateStr : dateRange;
+  // fetchParam encoding:
+  //   preset  → "28days" | "7days" | etc.
+  //   custom  → "custom:2025-01-01:2025-01-15"  (only when both dates selected)
+  const fetchParam = React.useMemo(() => {
+    if (dateRange !== "custom") return dateRange;
+    if (customStart && customEnd) {
+      const fmt = (d) => d.toISOString().split("T")[0];
+      return `custom:${fmt(customStart)}:${fmt(customEnd)}`;
+    }
+    // Only start selected — don't fetch yet, keep previous data
+    return "28days";
+  }, [dateRange, customStart, customEnd]);
   
   const activeBrandString = activeBlog === "all" ? "all" : (blogBrandMap[activeBlog]?.[0] || "all");
   
   // Always fetch 'all' articles so local filtering is instantaneous when switching blogs
   const { articles, loading: articlesLoading } = useArticles(fetchParam, "all");
   const { realtime, refresh: refreshRealtime, loading: realtimeLoading, refreshing: realtimeRefreshing } = useRealtime(activeBrandString, activeTab === "realtime");
-  const overviewData = useOverviewData(activeBrandString, fetchParam);
-  const lowCtrData = useLowCTRData(activeBrandString);
+  const overviewData = useOverviewData(activeBrandString, fetchParam, activeTab === "overview");
+  const lowCtrData = useLowCTRData(activeBrandString, activeTab === "low-ctr");
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -124,9 +136,9 @@ export default function DashboardLayout() {
       case "realtime":
         return <RealtimeView realtime={realtime} onRefresh={handleRealtimeRefresh} refreshing={realtimeRefreshing} todayData={filteredData} brand={activeBrandString} loading={realtimeLoading} chartRefreshKey={chartRefreshKey} />;
       case "top-pages":
-        return <TopPages data={filteredData} />;
+        return <TopPages data={filteredData} loading={articlesLoading} />;
       case "opportunities":
-        return <OpportunityPages data={filteredData} />;
+        return <OpportunityPages data={filteredData} loading={articlesLoading} />;
       case "low-ctr":
         return <LowCTR keywords={lowCtrData.keywords} />;
       case "monetization":
@@ -155,9 +167,12 @@ export default function DashboardLayout() {
                 {articlesLoading && (
                   <div className="w-4 h-4 border-2 border-t-transparent border-blue-500 rounded-full animate-spin mr-1"></div>
                 )}
-                <select 
-                  value={dateRange} 
-                  onChange={(e) => setDateRange(e.target.value)}
+                <select
+                  value={dateRange}
+                  onChange={(e) => {
+                    setDateRange(e.target.value);
+                    if (e.target.value !== "custom") setCustomRange([null, null]);
+                  }}
                   className="text-xs px-2.5 py-1.5 rounded-lg border outline-none"
                   style={{ background: "var(--bg-tertiary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
                 >
@@ -166,22 +181,30 @@ export default function DashboardLayout() {
                   <option value="14days">Last 14 Days</option>
                   <option value="28days">Last 28 Days</option>
                   <option value="30days">Last 30 Days</option>
-                  <option value="custom">Custom Date</option>
+                  <option value="custom">Custom Range</option>
                 </select>
               </div>
 
-              {/* Calendar Date Picker (only show if custom) */}
+              {/* Custom date range picker — shows two calendars inline */}
               {dateRange === "custom" && (
                 <div className="flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5" style={{ color: "var(--text-muted)" }} />
+                  <Calendar className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "var(--text-muted)" }} />
                   <DatePicker
-                    selected={selectedDate}
-                    onChange={(date) => setSelectedDate(date || new Date())}
+                    selectsRange
+                    startDate={customStart}
+                    endDate={customEnd}
+                    onChange={(range) => setCustomRange(range)}
                     maxDate={new Date()}
                     dateFormat="dd MMM yyyy"
-                    className="text-xs px-2.5 py-1.5 rounded-lg border w-[130px] cursor-pointer"
+                    placeholderText="Select date range..."
+                    isClearable
+                    monthsShown={2}
+                    className="text-xs px-2.5 py-1.5 rounded-lg border w-[210px] cursor-pointer"
                     style={{ background: "var(--bg-tertiary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
                   />
+                  {customStart && !customEnd && (
+                    <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>Pick end date</span>
+                  )}
                 </div>
               )}
 
@@ -266,7 +289,7 @@ export default function DashboardLayout() {
         {/* Realtime tab has its own inline skeletons — never block it with the global loader */}
         {activeTab === "realtime" ? (
           renderView()
-        ) : (activeTab === "overview" && overviewData.loading) || (activeTab === "low-ctr" && lowCtrData.loading) || articlesLoading ? (
+        ) : (activeTab === "overview" && overviewData.loading) || (activeTab === "low-ctr" && lowCtrData.loading) ? (
           <SkeletonLoader />
         ) : (
           renderView()

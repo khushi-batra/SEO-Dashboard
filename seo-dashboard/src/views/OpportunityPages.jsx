@@ -6,7 +6,32 @@ import React, { useMemo } from "react";
 import { Target } from "lucide-react";
 import ArticleTable from "../components/ArticleTable";
 
-export default function OpportunityPages({ data }) {
+function TableSkeleton({ rows = 8 }) {
+  return (
+    <div className="rounded-xl border overflow-hidden animate-pulse" style={{ borderColor: "var(--border)" }}>
+      <div className="grid grid-cols-7 gap-3 px-4 py-3" style={{ background: "var(--bg-tertiary)" }}>
+        {[...Array(7)].map((_, i) => (
+          <div key={i} className="h-3 rounded" style={{ background: "var(--bg-secondary)" }} />
+        ))}
+      </div>
+      {[...Array(rows)].map((_, i) => (
+        <div key={i} className="grid grid-cols-7 gap-3 px-4 py-3.5 border-t" style={{ borderColor: "var(--border)" }}>
+          <div className="col-span-2 space-y-1.5">
+            <div className="h-3 w-4/5 rounded" style={{ background: "var(--bg-tertiary)" }} />
+            <div className="h-2 w-3/5 rounded" style={{ background: "var(--bg-tertiary)" }} />
+          </div>
+          <div className="h-3 w-14 rounded" style={{ background: "var(--bg-tertiary)" }} />
+          <div className="h-3 w-10 rounded" style={{ background: "var(--bg-tertiary)" }} />
+          <div className="h-3 w-16 rounded" style={{ background: "var(--bg-tertiary)" }} />
+          <div className="h-3 w-10 rounded" style={{ background: "var(--bg-tertiary)" }} />
+          <div className="h-3 w-8 rounded" style={{ background: "var(--bg-tertiary)" }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default function OpportunityPages({ data, loading = false }) {
   const opportunities = useMemo(() => {
     return data
       .filter((a) => a.avgPosition >= 5 && a.avgPosition <= 20 && a.impressions > 500)
@@ -62,11 +87,14 @@ export default function OpportunityPages({ data }) {
         <div>
           <h2 className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>Opportunity Pages</h2>
           <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-            Pages ranking position 5-20 in Google — push to top 5 for significant traffic increase.
+            Pages ranking position 5–20 in Google — push to top 5 for significant traffic increase.
           </p>
         </div>
       </div>
-      {opportunities.length === 0 ? (
+
+      {loading ? (
+        <TableSkeleton rows={8} />
+      ) : opportunities.length === 0 ? (
         <div className="text-center py-12 text-sm" style={{ color: "var(--text-muted)" }}>
           No opportunity pages found with GSC position data in this range.
         </div>

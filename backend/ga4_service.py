@@ -1,25 +1,21 @@
 """
 ga4_service.py — Unified Data Service
 =======================================
-GA4 = traffic data (what happens on the site)
-GSC = search insights (how Google sees the same pages)
+GA4 = traffic data  |  GSC = search insights
 
-These are TWO VIEWS of the SAME article list, not additive datasets.
-GA4 provides the article inventory. GSC enriches those articles with
-search ranking data.
-
-Supports:
-- Realtime (live users right now)
-- Historical reports with date range selection
-- Sessions by channel
-- User activity timeline
-- GSC enrichment (clicks, impressions, position, queries)
+Architecture:
+- ONE shared GA4 client + ONE shared GSC service (built once, reused)
+- ONE shared ThreadPoolExecutor (no nested pools — avoids GIL contention)
+- All per-property and per-site calls fired simultaneously via the shared pool
+- GA4 articles fetch + GSC fetch run in parallel inside fetch_all_data
 """
 
 import os
 import hashlib
+import threading
 from datetime import date, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from google.oauth2 import service_account
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
@@ -37,35 +33,54 @@ load_dotenv(override=True)
 
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 
-def get_gsc_site_urls(brand_filter: str = None):
-    from dotenv import load_dotenv
-    load_dotenv(override=True)
-    urls = []
-    
-    # We only have a domain map for finding specific GSC urls by brand
-    domain_to_brand = {
-        "https://www.careerpower.in/": ["career power html", "career power blog"],
-        "https://www.studyiq.com/": ["studyiq main site", "studyiq articles"],
-        "https://www.teachersadda.com/": ["teaching adda"],
-        "https://www.adda247jobs.com/": ["adda jobs"],
-        "https://www.bankersadda.com/": ["bankersadda", "hindi bankers adda"],
-        "https://www.adda247.com/": ["adda exams", "current affairs", "engineering adda"]
-    }
-    
-    for k, v in os.environ.items():
-        if k.startswith("GSC_SITE_URL") and v.strip():
-            url = v.strip()
-            # If a specific brand is requested, only return its matching GSC url
-            if brand_filter and brand_filter.lower() != "all":
-                brands_for_url = domain_to_brand.get(url, [])
-                if brand_filter.lower() in brands_for_url:
-                    urls.append(url)
-            else:
-                # If "all" is requested, EXCLUDE StudyIQ
-                if "studyiq.com" in url:
-                    continue
-                urls.append(url)
-    return urls
+# ─── Shared singletons ────────────────────────────────────────────────────────
+_ga4_client: BetaAnalyticsDataClient = None
+_gsc_service = None
+_client_lock = threading.Lock()
+
+# Single shared pool — no nested pools anywhere in this module
+SHARED_POOL = ThreadPoolExecutor(max_workers=24)
+
+
+def _build_credentials(scopes=None):
+    private_key = os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n")
+    return service_account.Credentials.from_service_account_info({
+        "type": os.getenv("GOOGLE_SERVICE_ACCOUNT_TYPE", "service_account"),
+        "project_id": os.getenv("GOOGLE_PROJECT_ID"),
+        "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
+        "private_key": private_key,
+        "client_email": os.getenv("GOOGLE_CLIENT_EMAIL"),
+        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+        "auth_uri": os.getenv("GOOGLE_AUTH_URI"),
+        "token_uri": os.getenv("GOOGLE_TOKEN_URI"),
+        "auth_provider_x509_cert_url": os.getenv("GOOGLE_AUTH_PROVIDER_CERT_URL"),
+        "client_x509_cert_url": os.getenv("GOOGLE_CLIENT_CERT_URL"),
+        "universe_domain": os.getenv("GOOGLE_UNIVERSE_DOMAIN", "googleapis.com"),
+    }, scopes=scopes or SCOPES)
+
+
+def _get_ga4_client() -> BetaAnalyticsDataClient:
+    global _ga4_client
+    if _ga4_client is not None:
+        return _ga4_client
+    with _client_lock:
+        if _ga4_client is None:
+            _ga4_client = BetaAnalyticsDataClient(credentials=_build_credentials())
+    return _ga4_client
+
+
+def _get_gsc_service():
+    global _gsc_service
+    if _gsc_service is not None:
+        return _gsc_service
+    with _client_lock:
+        if _gsc_service is None:
+            creds = _build_credentials(scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
+            _gsc_service = build("searchconsole", "v1", credentials=creds)
+    return _gsc_service
+
+
+# ─── Config maps ──────────────────────────────────────────────────────────────
 
 PROPERTY_BRANDS = {
     "431779823": "Adda Exams",
@@ -86,40 +101,44 @@ PROPERTY_DOMAINS = {
     "431779823": "https://www.adda247.com",
     "355422738": "https://www.adda247jobs.com",
     "355756107": "https://www.teachersadda.com",
-    "355414070": "https://www.adda247.com",       # Engineering Adda (subpath of adda247)
-    "209760965": "https://www.adda247.com",       # Current Affairs (subpath of adda247)
-    "314016871": "https://store.adda247.com",     # Adda Store
-    "352396958": "https://www.careerpower.in",    # Career Power HTML
-    "332111738": "https://www.careerpower.in",    # Career Power Blog
+    "355414070": "https://www.adda247.com",
+    "209760965": "https://www.adda247.com",
+    "314016871": "https://store.adda247.com",
+    "352396958": "https://www.careerpower.in",
+    "332111738": "https://www.careerpower.in",
     "355432122": "https://www.bankersadda.com",
-    "355756324": "https://www.bankersadda.com",   # Hindi Bankers Adda (same domain)
-    "292607808": "https://www.studyiq.com",       # StudyIQ Main Site
-    "384799357": "https://www.studyiq.com",       # StudyIQ Articles (same domain)
+    "355756324": "https://www.bankersadda.com",
+    "292607808": "https://www.studyiq.com",
+    "384799357": "https://www.studyiq.com",
+}
+
+GSC_DOMAIN_BRAND_MAP = {
+    "https://www.careerpower.in/": ["career power html", "career power blog"],
+    "https://www.studyiq.com/": ["studyiq main site", "studyiq articles"],
+    "https://www.teachersadda.com/": ["teaching adda"],
+    "https://www.adda247jobs.com/": ["adda jobs"],
+    "https://www.bankersadda.com/": ["bankersadda", "hindi bankers adda"],
+    "https://www.adda247.com/": ["adda exams", "current affairs", "engineering adda"],
 }
 
 
-def _build_credentials(scopes=None):
-    private_key = os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n")
-    return service_account.Credentials.from_service_account_info({
-        "type": os.getenv("GOOGLE_SERVICE_ACCOUNT_TYPE", "service_account"),
-        "project_id": os.getenv("GOOGLE_PROJECT_ID"),
-        "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
-        "private_key": private_key,
-        "client_email": os.getenv("GOOGLE_CLIENT_EMAIL"),
-        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-        "auth_uri": os.getenv("GOOGLE_AUTH_URI"),
-        "token_uri": os.getenv("GOOGLE_TOKEN_URI"),
-        "auth_provider_x509_cert_url": os.getenv("GOOGLE_AUTH_PROVIDER_CERT_URL"),
-        "client_x509_cert_url": os.getenv("GOOGLE_CLIENT_CERT_URL"),
-        "universe_domain": os.getenv("GOOGLE_UNIVERSE_DOMAIN", "googleapis.com"),
-    }, scopes=scopes or SCOPES)
+def get_gsc_site_urls(brand_filter: str = None) -> list:
+    load_dotenv(override=True)
+    urls = []
+    for k, v in os.environ.items():
+        if k.startswith("GSC_SITE_URL") and v.strip():
+            url = v.strip()
+            if brand_filter and brand_filter.lower() != "all":
+                brands_for_url = GSC_DOMAIN_BRAND_MAP.get(url, [])
+                if brand_filter.lower() in brands_for_url:
+                    urls.append(url)
+            else:
+                if "studyiq.com" not in url:
+                    urls.append(url)
+    return urls
 
 
-def _get_ga4_client():
-    return BetaAnalyticsDataClient(credentials=_build_credentials())
-
-
-def _get_property_ids(brand_filter: str = None):
+def _get_property_ids(brand_filter: str = None) -> list:
     raw = os.getenv("GA4_PROPERTY_ID", "")
     all_props = [p.strip() for p in raw.split(",") if p.strip()]
     if not brand_filter or brand_filter.lower() == "all":
@@ -145,199 +164,164 @@ def _path_to_title(path: str) -> str:
     return " ".join(w.upper() if w.lower() in acronyms else w.capitalize() for w in words) or path
 
 
-# ─── Realtime (Today's Live Data) ─────────────────────────────────────────────
+def _parse_gsc_date(d_str, default_days_ago):
+    if not d_str:
+        return (date.today() - timedelta(days=default_days_ago)).isoformat()
+    if d_str == "today":
+        return date.today().isoformat()
+    if d_str.endswith("daysAgo"):
+        try:
+            return (date.today() - timedelta(days=int(d_str.replace("daysAgo", "")))).isoformat()
+        except Exception:
+            pass
+    return d_str
 
-def _resolve_missing_url(client, prop_id, title, domain):
-    """
-    Dynamically fallback to querying GA4 standard reports using a fuzzy CONTAINS filter
-    to find URLs for titles that might have been changed slightly after publishing.
-    """
-    # Use first 4 words for a robust fuzzy search
-    first_half = " ".join(title.split()[:4])
-    if len(first_half) < 5:
-        return ""
-    
-    from google.analytics.data_v1beta.types import FilterExpression, Filter
+
+# ─── Realtime ─────────────────────────────────────────────────────────────────
+
+_GLOBAL_URL_MAP: dict = {}
+
+
+def _fetch_realtime_total(prop_id: str) -> int:
+    """Fetch just the total active user count for one property."""
+    client = _get_ga4_client()
     try:
-        req = RunReportRequest(
+        resp = client.run_realtime_report(RunRealtimeReportRequest(
             property=f"properties/{prop_id}",
-            dimensions=[Dimension(name="pageTitle"), Dimension(name="pagePath")],
-            metrics=[Metric(name="screenPageViews")],
-            date_ranges=[DateRange(start_date="7daysAgo", end_date="today")],
-            dimension_filter=FilterExpression(
-                filter=Filter(
-                    field_name="pageTitle",
-                    string_filter=Filter.StringFilter(
-                        match_type=Filter.StringFilter.MatchType.CONTAINS,
-                        value=first_half
-                    )
-                )
-            ),
-            limit=1
-        )
-        resp = client.run_report(req)
-        if resp.rows:
-            return f"{domain}{resp.rows[0].dimension_values[1].value}"
+            metrics=[Metric(name="activeUsers")],
+            limit=1,
+        ))
+        return int(resp.rows[0].metric_values[0].value) if resp.rows else 0
     except Exception as e:
-        print(f"[Dynamic Resolve Error] {title}: {e}")
-    return ""
+        print(f"[Realtime Total Error] {prop_id}: {e}")
+        return 0
+
+
+def _fetch_realtime_pages(prop_id: str) -> list:
+    """Fetch per-page active users for one property, with URL resolution."""
+    brand = PROPERTY_BRANDS.get(prop_id, "Unknown")
+    domain = PROPERTY_DOMAINS.get(prop_id, "")
+    client = _get_ga4_client()
+    pages = []
+    unresolved = []
+    try:
+        resp = client.run_realtime_report(RunRealtimeReportRequest(
+            property=f"properties/{prop_id}",
+            dimensions=[Dimension(name="unifiedScreenName")],
+            metrics=[Metric(name="activeUsers")],
+            limit=30,
+        ))
+        for row in resp.rows:
+            page_name = row.dimension_values[0].value
+            users = int(row.metric_values[0].value)
+            if page_name in ("(not set)", "", "/", "(other)"):
+                continue
+            mapped_url = _GLOBAL_URL_MAP.get(page_name.strip().lower(), "")
+            if not mapped_url:
+                clean = page_name.split("-")[0].split("|")[0].strip().lower()
+                mapped_url = _GLOBAL_URL_MAP.get(clean, "")
+            pages.append({"title": page_name, "url": mapped_url, "activeUsers": users, "brand": brand})
+            if not mapped_url:
+                unresolved.append(page_name)
+
+        if unresolved:
+            url_resp = client.run_report(RunReportRequest(
+                property=f"properties/{prop_id}",
+                dimensions=[Dimension(name="pageTitle"), Dimension(name="pagePath")],
+                metrics=[Metric(name="screenPageViews")],
+                date_ranges=[DateRange(start_date="7daysAgo", end_date="today")],
+                limit=1000,
+            ))
+            local_map = {}
+            for r in url_resp.rows:
+                t = r.dimension_values[0].value
+                path = r.dimension_values[1].value
+                if t and t != "(not set)":
+                    full_url = f"{domain}{path}"
+                    local_map[t.strip().lower()] = full_url
+                    clean = t.split("-")[0].split("|")[0].strip().lower()
+                    if clean:
+                        local_map[clean] = full_url
+                    _GLOBAL_URL_MAP[t.strip().lower()] = full_url
+            for p in pages:
+                if not p["url"]:
+                    key = p["title"].strip().lower()
+                    p["url"] = local_map.get(key, "")
+                    if not p["url"]:
+                        clean = p["title"].split("-")[0].split("|")[0].strip().lower()
+                        p["url"] = local_map.get(clean, "")
+                    if p["url"]:
+                        _GLOBAL_URL_MAP[key] = p["url"]
+    except Exception as e:
+        print(f"[Realtime Pages Error] {prop_id}: {e}")
+    return pages
+
 
 def fetch_realtime_data(brand_filter: str = None) -> dict:
-    """
-    Fetch current realtime stats: total active users + per-page breakdown.
-    This is what shows on the landing page as "live now" data.
-    
-    URL resolution strategy:
-    1. First check _GLOBAL_URL_MAP (populated by fetch_articles on any data load)
-    2. For any still-missing URLs, do ONE batch query per property (last 7 days)
-       to get all title→path mappings, then match locally
-    """
-    client = _get_ga4_client()
+    """All properties in parallel — total and pages fetched simultaneously per property."""
+    prop_ids = _get_property_ids(brand_filter)
     total_active = 0
-    pages = []
+    all_pages = []
 
-    for prop_id in _get_property_ids(brand_filter):
-        brand = PROPERTY_BRANDS.get(prop_id, "Unknown")
-        domain = PROPERTY_DOMAINS.get(prop_id, "")
-        try:
-            # 1. Get total active users
-            req = RunRealtimeReportRequest(
-                property=f"properties/{prop_id}",
-                metrics=[Metric(name="activeUsers")],
-                limit=1,
-            )
-            resp = client.run_realtime_report(req)
-            if resp.rows:
-                total_active += int(resp.rows[0].metric_values[0].value)
+    # Submit total + pages as separate futures for every property at once —
+    # 2N futures instead of N sequential-pair calls, cutting wall-clock ~in half.
+    all_futures = {}
+    for pid in prop_ids:
+        all_futures[SHARED_POOL.submit(_fetch_realtime_total, pid)] = ("total", pid)
+        all_futures[SHARED_POOL.submit(_fetch_realtime_pages, pid)] = ("pages", pid)
 
-            # 2. Get per-page breakdown (Realtime)
-            req2 = RunRealtimeReportRequest(
-                property=f"properties/{prop_id}",
-                dimensions=[Dimension(name="unifiedScreenName")],
-                metrics=[Metric(name="activeUsers")],
-                limit=30,
-            )
-            resp2 = client.run_realtime_report(req2)
-            
-            prop_pages = []  # Collect this property's pages
-            unresolved_titles = []  # Track titles without URLs
-            
-            for row in resp2.rows:
-                page_name = row.dimension_values[0].value
-                users = int(row.metric_values[0].value)
-                if page_name in ("(not set)", "", "/", "(other)"):
-                    continue
-                
-                # Try _GLOBAL_URL_MAP first (instant, no API call)
-                mapped_url = _GLOBAL_URL_MAP.get(page_name.strip().lower(), "")
-                if not mapped_url:
-                    clean_title = page_name.split("-")[0].split("|")[0].strip().lower()
-                    mapped_url = _GLOBAL_URL_MAP.get(clean_title, "")
-                
-                prop_pages.append({
-                    "title": page_name,
-                    "url": mapped_url,
-                    "activeUsers": users,
-                    "brand": brand,
-                })
-                if not mapped_url:
-                    unresolved_titles.append(page_name)
-            
-            # 3. If there are unresolved titles, do ONE batch query for this property
-            if unresolved_titles:
-                try:
-                    url_req = RunReportRequest(
-                        property=f"properties/{prop_id}",
-                        dimensions=[Dimension(name="pageTitle"), Dimension(name="pagePath")],
-                        metrics=[Metric(name="screenPageViews")],
-                        date_ranges=[DateRange(start_date="7daysAgo", end_date="today")],
-                        limit=1000,
-                    )
-                    url_resp = client.run_report(url_req)
-                    
-                    # Build a local title→url map for this property
-                    local_map = {}
-                    for r in url_resp.rows:
-                        t = r.dimension_values[0].value
-                        path = r.dimension_values[1].value
-                        if t and t != "(not set)":
-                            full_url = f"{domain}{path}"
-                            local_map[t.strip().lower()] = full_url
-                            # Also index by first part before dash/pipe
-                            clean = t.split("-")[0].split("|")[0].strip().lower()
-                            if clean:
-                                local_map[clean] = full_url
-                            # Cache globally for future calls
-                            _GLOBAL_URL_MAP[t.strip().lower()] = full_url
-                    
-                    # Now resolve the unresolved pages
-                    for p in prop_pages:
-                        if not p["url"]:
-                            key = p["title"].strip().lower()
-                            p["url"] = local_map.get(key, "")
-                            if not p["url"]:
-                                clean = p["title"].split("-")[0].split("|")[0].strip().lower()
-                                p["url"] = local_map.get(clean, "")
-                            if p["url"]:
-                                _GLOBAL_URL_MAP[key] = p["url"]
-                except Exception as e:
-                    print(f"[Realtime Batch URL Error] {prop_id}: {e}")
-            
-            pages.extend(prop_pages)
-        except Exception as e:
-            print(f"[Realtime Error] {prop_id}: {e}")
+    for future in as_completed(all_futures):
+        kind, _ = all_futures[future]
+        if kind == "total":
+            total_active += future.result()
+        else:
+            all_pages.extend(future.result())
 
-    # Sort pages by active users descending
-    pages.sort(key=lambda x: x["activeUsers"], reverse=True)
-    return {"totalActive": total_active, "pages": pages[:30]}
+    all_pages.sort(key=lambda x: x["activeUsers"], reverse=True)
+    return {"totalActive": total_active, "pages": all_pages[:30]}
 
 
-def fetch_realtime_per_minute(brand_filter: str = None) -> list[dict]:
-    """
-    Fetch active users per minute for the last 30 minutes.
-    Uses the 'minutesAgo' dimension from GA4 Realtime API.
-    Returns: [{"minute": 0, "users": 120}, {"minute": 1, "users": 115}, ...]
-    Sorted from oldest (29 min ago) to newest (0 = now).
-    """
+def _fetch_realtime_minute_for_property(prop_id: str) -> dict:
     client = _get_ga4_client()
-    minute_totals = {}  # minute -> total users across all properties
-
-    for prop_id in _get_property_ids(brand_filter):
-        try:
-            req = RunRealtimeReportRequest(
-                property=f"properties/{prop_id}",
-                dimensions=[Dimension(name="minutesAgo")],
-                metrics=[Metric(name="activeUsers")],
-                limit=30,
-            )
-            resp = client.run_realtime_report(req)
-            for row in resp.rows:
-                minute = int(row.dimension_values[0].value)
-                users = int(row.metric_values[0].value)
-                minute_totals[minute] = minute_totals.get(minute, 0) + users
-        except Exception as e:
-            print(f"[Realtime PerMinute Error] {prop_id}: {e}")
-
-    # Build sorted list from 29 (oldest) to 0 (now)
-    result = []
-    for m in range(29, -1, -1):
-        result.append({"minute": m, "users": minute_totals.get(m, 0)})
-
-    return result
+    minute_totals = {}
+    try:
+        resp = client.run_realtime_report(RunRealtimeReportRequest(
+            property=f"properties/{prop_id}",
+            dimensions=[Dimension(name="minutesAgo")],
+            metrics=[Metric(name="activeUsers")],
+            limit=30,
+        ))
+        for row in resp.rows:
+            m = int(row.dimension_values[0].value)
+            u = int(row.metric_values[0].value)
+            minute_totals[m] = minute_totals.get(m, 0) + u
+    except Exception as e:
+        print(f"[Realtime PerMinute Error] {prop_id}: {e}")
+    return minute_totals
 
 
-# ─── Historical Report (Configurable Date Range) ──────────────────────────────
+def fetch_realtime_per_minute(brand_filter: str = None) -> list:
+    """All properties in parallel — per-minute active users."""
+    prop_ids = _get_property_ids(brand_filter)
+    combined = {}
 
-_GLOBAL_URL_MAP = {}
+    futures = {SHARED_POOL.submit(_fetch_realtime_minute_for_property, pid): pid for pid in prop_ids}
+    for future in as_completed(futures):
+        for minute, users in future.result().items():
+            combined[minute] = combined.get(minute, 0) + users
 
-def _fetch_articles_for_property(prop_id: str, start_date: str, end_date: str) -> list[dict]:
-    """Fetch articles for a single GA4 property. Runs in a thread pool."""
+    return [{"minute": m, "users": combined.get(m, 0)} for m in range(29, -1, -1)]
+
+
+# ─── Articles (GA4 historical) ────────────────────────────────────────────────
+
+def _fetch_articles_for_property(prop_id: str, start_date: str, end_date: str) -> list:
     brand = PROPERTY_BRANDS.get(prop_id, "Unknown")
     domain = PROPERTY_DOMAINS.get(prop_id, "")
     client = _get_ga4_client()
     results = []
     try:
-        request = RunReportRequest(
+        response = client.run_report(RunReportRequest(
             property=f"properties/{prop_id}",
             dimensions=[Dimension(name="pagePath"), Dimension(name="pageTitle")],
             metrics=[
@@ -349,94 +333,75 @@ def _fetch_articles_for_property(prop_id: str, start_date: str, end_date: str) -
             ],
             date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
             order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
-            limit=50,
-        )
-        response = client.run_report(request)
+            limit=100,  # top 100 per property; 10 properties = up to 1000 unique articles
+        ))
         for row in response.rows:
             page_path = row.dimension_values[0].value
             page_title = row.dimension_values[1].value
-            views = int(row.metric_values[0].value)
-            users = int(row.metric_values[1].value)
-            avg_duration = float(row.metric_values[2].value)
-            sessions = int(row.metric_values[3].value)
-            new_users = int(row.metric_values[4].value)
-
             if page_path in ("/", "/blog/", "/blog", "/articles/", "/articles"):
                 continue
-
             url = f"{domain}{page_path}"
             title = page_title if page_title and page_title != "(not set)" else _path_to_title(page_path)
             results.append({
-                "prop_id": prop_id, "brand": brand, "domain": domain,
-                "url": url, "title": title,
-                "pageViews": views, "users": users, "avgDuration": avg_duration,
-                "sessions": sessions, "newUsers": new_users,
+                "brand": brand, "domain": domain, "url": url, "title": title,
+                "pageViews": int(row.metric_values[0].value),
+                "users": int(row.metric_values[1].value),
+                "avgDuration": float(row.metric_values[2].value),
+                "sessions": int(row.metric_values[3].value),
+                "newUsers": int(row.metric_values[4].value),
             })
     except Exception as e:
         print(f"[GA4 Error] {prop_id}: {e}")
     return results
 
 
-def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today", brand_filter: str = None) -> list[dict]:
-    """
-    Fetch article list from GA4 with traffic metrics — all properties in PARALLEL.
-    This is the PRIMARY data source — the article inventory.
-    """
+def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today", brand_filter: str = None) -> list:
     global _GLOBAL_URL_MAP
     prop_ids = _get_property_ids(brand_filter)
     seen_urls = {}
 
-    # Fire all property fetches simultaneously
-    with ThreadPoolExecutor(max_workers=min(len(prop_ids), 10)) as executor:
-        futures = {executor.submit(_fetch_articles_for_property, pid, start_date, end_date): pid for pid in prop_ids}
-        for future in as_completed(futures):
-            rows = future.result()
-            for row in rows:
-                url = row["url"]
-                title = row["title"]
-                domain = row["domain"]
-                views = row["pageViews"]
+    futures = {SHARED_POOL.submit(_fetch_articles_for_property, pid, start_date, end_date): pid for pid in prop_ids}
+    for future in as_completed(futures):
+        for row in future.result():
+            url, title, domain, views = row["url"], row["title"], row["domain"], row["pageViews"]
+            _GLOBAL_URL_MAP[title.strip().lower()] = url
+            _GLOBAL_URL_MAP[_path_to_title(url.replace(domain, "")).strip().lower()] = url
+            clean_t = title.split("-")[0].split("|")[0].strip().lower()
+            if clean_t:
+                _GLOBAL_URL_MAP[clean_t] = url
+            if url in seen_urls:
+                if views > seen_urls[url]["pageViews"]:
+                    seen_urls[url].update({
+                        "pageViews": views, "users": row["users"], "avgDuration": row["avgDuration"],
+                        "sessions": row["sessions"], "newUsers": row["newUsers"], "brand": row["brand"],
+                    })
+                continue
+            seen_urls[url] = {
+                "id": _generate_id(url), "title": title, "url": url, "brand": row["brand"],
+                "pageViews": views, "users": row["users"], "newUsers": row["newUsers"],
+                "sessions": row["sessions"], "avgDuration": row["avgDuration"],
+                "clicks": 0, "impressions": 0, "avgPosition": 0, "ctr": 0,
+            }
 
-                # Update global URL map
-                _GLOBAL_URL_MAP[title.strip().lower()] = url
-                _GLOBAL_URL_MAP[_path_to_title(url.replace(domain, "")).strip().lower()] = url
-                clean_t = title.split("-")[0].split("|")[0].strip().lower()
-                if clean_t:
-                    _GLOBAL_URL_MAP[clean_t] = url
-
-                # Deduplicate: keep the entry with more views
-                if url in seen_urls:
-                    if views > seen_urls[url]["pageViews"]:
-                        seen_urls[url].update({
-                            "pageViews": views, "users": row["users"],
-                            "avgDuration": row["avgDuration"], "sessions": row["sessions"],
-                            "newUsers": row["newUsers"], "brand": row["brand"],
-                        })
-                    continue
-
-                seen_urls[url] = {
-                    "id": _generate_id(url),
-                    "title": title, "url": url, "brand": row["brand"],
-                    "pageViews": views, "users": row["users"],
-                    "newUsers": row["newUsers"], "sessions": row["sessions"],
-                    "avgDuration": row["avgDuration"],
-                    "clicks": 0, "impressions": 0, "avgPosition": 0, "ctr": 0,
-                }
-
-    articles = list(seen_urls.values())
-    articles.sort(key=lambda a: a["pageViews"], reverse=True)
-    print(f"[GA4] {len(articles)} unique articles from {len(prop_ids)} properties (parallel)")
+    articles = sorted(seen_urls.values(), key=lambda a: a["pageViews"], reverse=True)
+    print(f"[GA4] {len(articles)} articles from {len(prop_ids)} properties (parallel)")
     return articles
 
 
-# ─── GSC Enrichment ────────────────────────────────────────────────────────────
+# ─── GSC Enrichment ───────────────────────────────────────────────────────────
 
-def _fetch_gsc_site(service, site_url: str, start_dt: str, end_dt: str, row_limit: int = 1000) -> list[dict]:
-    """Fetch GSC data for a single site. Runs in a thread pool."""
+def _fetch_gsc_site(site_url: str, start_dt: str, end_dt: str, row_limit: int = 1000) -> list:
+    """Fetch GSC page data for one site. Hard cap at 1000 rows — enough for enrichment without bloat."""
+    service = _get_gsc_service()
     try:
         response = service.searchanalytics().query(
             siteUrl=site_url,
-            body={"startDate": start_dt, "endDate": end_dt, "dimensions": ["page"], "rowLimit": row_limit},
+            body={
+                "startDate": start_dt,
+                "endDate": end_dt,
+                "dimensions": ["page"],
+                "rowLimit": min(row_limit, 1000),
+            },
         ).execute()
         return response.get("rows", [])
     except Exception as e:
@@ -444,215 +409,8 @@ def _fetch_gsc_site(service, site_url: str, start_dt: str, end_dt: str, row_limi
         return []
 
 
-def enrich_with_gsc(articles: list[dict], start_date: str = None, end_date: str = None, brand_filter: str = None) -> list[dict]:
-    """
-    Takes the GA4 article list and ENRICHES it with GSC search data.
-    All GSC site queries run in PARALLEL.
-    """
-    site_urls = get_gsc_site_urls(brand_filter)
-    if not site_urls:
-        return articles
-
-    credentials = _build_credentials(scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
-    service = build("searchconsole", "v1", credentials=credentials)
-
-    def parse_gsc_date(d_str, default_days_ago):
-        if not d_str:
-            return (date.today() - timedelta(days=default_days_ago)).isoformat()
-        if d_str == "today":
-            return date.today().isoformat()
-        if d_str.endswith("daysAgo"):
-            try:
-                days = int(d_str.replace("daysAgo", ""))
-                return (date.today() - timedelta(days=days)).isoformat()
-            except:
-                pass
-        return d_str
-
-    end_dt = parse_gsc_date(end_date, 3)
-    start_dt = parse_gsc_date(start_date, 31)
-
-    gsc_map = {}
-
-    # Fetch all GSC sites in parallel
-    with ThreadPoolExecutor(max_workers=min(len(site_urls), 6)) as executor:
-        futures = {executor.submit(_fetch_gsc_site, service, su, start_dt, end_dt): su for su in site_urls}
-        for future in as_completed(futures):
-            rows = future.result()
-            for row in rows:
-                url = row["keys"][0]
-                from urllib.parse import urlparse
-                parsed = urlparse(url)
-                relative_url = parsed.path
-                if parsed.query:
-                    relative_url += "?" + parsed.query
-
-                if relative_url not in gsc_map:
-                    gsc_map[relative_url] = {
-                        "full_url": url,
-                        "clicks": int(row["clicks"]),
-                        "impressions": int(row["impressions"]),
-                        "avgPosition": float(row["position"]),
-                        "ctr": float(row["ctr"]),
-                        "count": 1,
-                        "matched": False
-                    }
-                else:
-                    gsc_map[relative_url]["clicks"] += int(row["clicks"])
-                    gsc_map[relative_url]["impressions"] += int(row["impressions"])
-                    gsc_map[relative_url]["avgPosition"] += float(row["position"])
-                    gsc_map[relative_url]["ctr"] += float(row["ctr"])
-                    gsc_map[relative_url]["count"] += 1
-
-    # Enrich articles that have a GSC match
-    matched = 0
-    from urllib.parse import urlparse
-    for article in articles:
-        parsed = urlparse(article["url"])
-        rel_url = parsed.path
-        if parsed.query:
-            rel_url += "?" + parsed.query
-
-        match_key = None
-        if article["url"] in gsc_map:
-            match_key = article["url"]
-        elif rel_url in gsc_map:
-            match_key = rel_url
-
-        if match_key:
-            data = gsc_map[match_key]
-            article["clicks"] = data["clicks"]
-            article["impressions"] = data["impressions"]
-            article["avgPosition"] = round(data["avgPosition"] / data["count"], 1)
-            article["ctr"] = round((data["ctr"] / data["count"]) * 100, 2)
-            data["matched"] = True
-            matched += 1
-
-    # Append any GSC pages that weren't in GA4 (0 traffic, but rank in search)
-    unmatched_count = 0
-    for rel_url, data in gsc_map.items():
-        if not data["matched"]:
-            title = _path_to_title(rel_url)
-            articles.append({
-                "id": _generate_id(data["full_url"]),
-                "title": title, "url": data["full_url"], "brand": "Search Console",
-                "pageViews": 0, "users": 0, "newUsers": 0, "sessions": 0, "avgDuration": 0,
-                "clicks": data["clicks"], "impressions": data["impressions"],
-                "avgPosition": round(data["avgPosition"] / data["count"], 1),
-                "ctr": round((data["ctr"] / data["count"]) * 100, 2),
-            })
-            unmatched_count += 1
-
-    print(f"[GSC] Enriched {matched} GA4 articles. Added {unmatched_count} GSC-only articles. Total: {len(articles)} (parallel)")
-    return articles
-
-
-# ─── Sessions by Channel ───────────────────────────────────────────────────────
-
-def fetch_sessions_by_channel(start_date="28daysAgo", end_date="today", brand_filter: str = None) -> list[dict]:
-    prop_ids = _get_property_ids(brand_filter)
-    channels = {}
-
-    def _fetch_one(prop_id):
-        client = _get_ga4_client()
-        rows = []
-        try:
-            request = RunReportRequest(
-                property=f"properties/{prop_id}",
-                dimensions=[Dimension(name="sessionDefaultChannelGroup")],
-                metrics=[Metric(name="sessions"), Metric(name="activeUsers")],
-                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="sessions"), desc=True)],
-                limit=10,
-            )
-            response = client.run_report(request)
-            for row in response.rows:
-                rows.append((row.dimension_values[0].value, int(row.metric_values[0].value), int(row.metric_values[1].value)))
-        except Exception as e:
-            print(f"[Channel Error] {prop_id}: {e}")
-        return rows
-
-    with ThreadPoolExecutor(max_workers=min(len(prop_ids), 10)) as executor:
-        for result in executor.map(_fetch_one, prop_ids):
-            for ch, sessions, users in result:
-                if ch not in channels:
-                    channels[ch] = {"channel": ch, "sessions": 0, "users": 0}
-                channels[ch]["sessions"] += sessions
-                channels[ch]["users"] += users
-
-    return sorted(channels.values(), key=lambda x: x["sessions"], reverse=True)
-
-
-# ─── User Activity Timeline ───────────────────────────────────────────────────
-
-def fetch_user_activity_timeline(start_date="28daysAgo", end_date="today", brand_filter: str = None) -> list[dict]:
-    prop_ids = _get_property_ids(brand_filter)
-    daily = {}
-
-    def _fetch_one(prop_id):
-        client = _get_ga4_client()
-        rows = []
-        try:
-            request = RunReportRequest(
-                property=f"properties/{prop_id}",
-                dimensions=[Dimension(name="date")],
-                metrics=[Metric(name="activeUsers"), Metric(name="sessions"), Metric(name="screenPageViews")],
-                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name="date"))],
-            )
-            response = client.run_report(request)
-            for row in response.rows:
-                d = row.dimension_values[0].value
-                formatted = f"{d[0:4]}-{d[4:6]}-{d[6:8]}"
-                rows.append((formatted, int(row.metric_values[0].value), int(row.metric_values[1].value), int(row.metric_values[2].value)))
-        except Exception as e:
-            print(f"[Timeline Error] {prop_id}: {e}")
-        return rows
-
-    with ThreadPoolExecutor(max_workers=min(len(prop_ids), 10)) as executor:
-        for result in executor.map(_fetch_one, prop_ids):
-            for formatted, users, sessions, pageViews in result:
-                if formatted not in daily:
-                    daily[formatted] = {"date": formatted, "users": 0, "sessions": 0, "pageViews": 0}
-                daily[formatted]["users"] += users
-                daily[formatted]["sessions"] += sessions
-                daily[formatted]["pageViews"] += pageViews
-
-    return sorted(daily.values(), key=lambda x: x["date"])
-
-
-# ─── GSC Queries ──────────────────────────────────────────────────────────────
-
-def fetch_gsc_queries(brand_filter: str = None) -> list[dict]:
-    site_urls = get_gsc_site_urls(brand_filter)
-    if not site_urls:
-        return []
-    credentials = _build_credentials(scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
-    service = build("searchconsole", "v1", credentials=credentials)
-    end_dt = (date.today() - timedelta(days=3)).isoformat()
-    start_dt = (date.today() - timedelta(days=31)).isoformat()
-
-    all_queries = {}
-
-    with ThreadPoolExecutor(max_workers=min(len(site_urls), 6)) as executor:
-        futures = {executor.submit(_fetch_gsc_site_queries, service, su, start_dt, end_dt, 30): su for su in site_urls}
-        for future in as_completed(futures):
-            for r in future.result():
-                q = r["keys"][0]
-                if q not in all_queries:
-                    all_queries[q] = {"query": q, "clicks": 0, "impressions": 0, "position": 0.0, "count": 0}
-                all_queries[q]["clicks"] += int(r["clicks"])
-                all_queries[q]["impressions"] += int(r["impressions"])
-                all_queries[q]["position"] += float(r["position"])
-                all_queries[q]["count"] += 1
-
-    for q in all_queries.values():
-        q["position"] = round(q["position"] / q["count"], 1)
-
-    return sorted(all_queries.values(), key=lambda x: x["clicks"], reverse=True)[:20]
-
-
-def _fetch_gsc_site_queries(service, site_url: str, start_dt: str, end_dt: str, row_limit: int) -> list[dict]:
+def _fetch_gsc_site_queries(site_url: str, start_dt: str, end_dt: str, row_limit: int) -> list:
+    service = _get_gsc_service()
     try:
         response = service.searchanalytics().query(
             siteUrl=site_url,
@@ -664,151 +422,269 @@ def _fetch_gsc_site_queries(service, site_url: str, start_dt: str, end_dt: str, 
         return []
 
 
-def fetch_gsc_low_ctr_keywords(brand_filter: str = None) -> list[dict]:
+def _build_gsc_map(site_urls: list, start_dt: str, end_dt: str) -> dict:
+    """Fetch all GSC sites in parallel and merge into one url→metrics map."""
+    gsc_map = {}
+    futures = {SHARED_POOL.submit(_fetch_gsc_site, su, start_dt, end_dt): su for su in site_urls}
+    for future in as_completed(futures):
+        for row in future.result():
+            url = row["keys"][0]
+            parsed = urlparse(url)
+            rel = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+            if rel not in gsc_map:
+                gsc_map[rel] = {
+                    "full_url": url, "clicks": int(row["clicks"]),
+                    "impressions": int(row["impressions"]), "avgPosition": float(row["position"]),
+                    "ctr": float(row["ctr"]), "count": 1,
+                }
+            else:
+                gsc_map[rel]["clicks"] += int(row["clicks"])
+                gsc_map[rel]["impressions"] += int(row["impressions"])
+                gsc_map[rel]["avgPosition"] += float(row["position"])
+                gsc_map[rel]["ctr"] += float(row["ctr"])
+                gsc_map[rel]["count"] += 1
+    return gsc_map
+
+
+def _apply_gsc_map(articles: list, gsc_map: dict) -> list:
+    """Enrich GA4 articles with GSC metrics. Does NOT append GSC-only rows —
+    pages with 0 GA4 traffic are not useful for Top Pages or Opportunities."""
+    if not gsc_map:
+        return articles
+    matched = 0
+    from urllib.parse import urlparse
+    for article in articles:
+        parsed = urlparse(article["url"])
+        rel = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        key = article["url"] if article["url"] in gsc_map else (rel if rel in gsc_map else None)
+        if key:
+            d = gsc_map[key]
+            article.update({
+                "clicks": d["clicks"],
+                "impressions": d["impressions"],
+                "avgPosition": round(d["avgPosition"] / d["count"], 1),
+                "ctr": round((d["ctr"] / d["count"]) * 100, 2),
+            })
+            matched += 1
+    print(f"[GSC] Enriched {matched}/{len(articles)} GA4 articles with GSC data")
+    return articles
+
+
+def enrich_with_gsc(articles: list, start_date: str = None, end_date: str = None, brand_filter: str = None) -> list:
+    site_urls = get_gsc_site_urls(brand_filter)
+    if not site_urls:
+        return articles
+    start_dt = _parse_gsc_date(start_date, 31)
+    end_dt = _parse_gsc_date(end_date, 3)
+    gsc_map = _build_gsc_map(site_urls, start_dt, end_dt)
+    return _apply_gsc_map(articles, gsc_map)  # no GSC-only rows appended
+
+
+# ─── Sessions by Channel ──────────────────────────────────────────────────────
+
+def fetch_sessions_by_channel(start_date="28daysAgo", end_date="today", brand_filter: str = None) -> list:
+    prop_ids = _get_property_ids(brand_filter)
+    channels = {}
+
+    def _fetch_one(prop_id):
+        client = _get_ga4_client()
+        rows = []
+        try:
+            response = client.run_report(RunReportRequest(
+                property=f"properties/{prop_id}",
+                dimensions=[Dimension(name="sessionDefaultChannelGroup")],
+                metrics=[Metric(name="sessions"), Metric(name="activeUsers")],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="sessions"), desc=True)],
+                limit=10,
+            ))
+            for row in response.rows:
+                rows.append((row.dimension_values[0].value, int(row.metric_values[0].value), int(row.metric_values[1].value)))
+        except Exception as e:
+            print(f"[Channel Error] {prop_id}: {e}")
+        return rows
+
+    futures = {SHARED_POOL.submit(_fetch_one, pid): pid for pid in prop_ids}
+    for future in as_completed(futures):
+        for ch, sessions, users in future.result():
+            if ch not in channels:
+                channels[ch] = {"channel": ch, "sessions": 0, "users": 0}
+            channels[ch]["sessions"] += sessions
+            channels[ch]["users"] += users
+
+    return sorted(channels.values(), key=lambda x: x["sessions"], reverse=True)
+
+
+# ─── User Activity Timeline ───────────────────────────────────────────────────
+
+def fetch_user_activity_timeline(start_date="28daysAgo", end_date="today", brand_filter: str = None) -> list:
+    prop_ids = _get_property_ids(brand_filter)
+    daily = {}
+
+    def _fetch_one(prop_id):
+        client = _get_ga4_client()
+        rows = []
+        try:
+            response = client.run_report(RunReportRequest(
+                property=f"properties/{prop_id}",
+                dimensions=[Dimension(name="date")],
+                metrics=[Metric(name="activeUsers"), Metric(name="sessions"), Metric(name="screenPageViews")],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name="date"))],
+            ))
+            for row in response.rows:
+                d = row.dimension_values[0].value
+                rows.append((f"{d[:4]}-{d[4:6]}-{d[6:8]}", int(row.metric_values[0].value),
+                              int(row.metric_values[1].value), int(row.metric_values[2].value)))
+        except Exception as e:
+            print(f"[Timeline Error] {prop_id}: {e}")
+        return rows
+
+    futures = {SHARED_POOL.submit(_fetch_one, pid): pid for pid in prop_ids}
+    for future in as_completed(futures):
+        for fmt, users, sessions, pv in future.result():
+            if fmt not in daily:
+                daily[fmt] = {"date": fmt, "users": 0, "sessions": 0, "pageViews": 0}
+            daily[fmt]["users"] += users
+            daily[fmt]["sessions"] += sessions
+            daily[fmt]["pageViews"] += pv
+
+    return sorted(daily.values(), key=lambda x: x["date"])
+
+
+# ─── GSC Queries & Low CTR ────────────────────────────────────────────────────
+
+def _aggregate_query_rows(rows_list: list) -> dict:
+    agg = {}
+    for rows in rows_list:
+        for r in rows:
+            q = r["keys"][0]
+            if q not in agg:
+                agg[q] = {"query": q, "clicks": 0, "impressions": 0, "position": 0.0, "count": 0}
+            agg[q]["clicks"] += int(r["clicks"])
+            agg[q]["impressions"] += int(r["impressions"])
+            agg[q]["position"] += float(r["position"])
+            agg[q]["count"] += 1
+    return agg
+
+
+def fetch_gsc_queries(brand_filter: str = None) -> list:
     site_urls = get_gsc_site_urls(brand_filter)
     if not site_urls:
         return []
-    credentials = _build_credentials(scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
-    service = build("searchconsole", "v1", credentials=credentials)
     end_dt = (date.today() - timedelta(days=3)).isoformat()
     start_dt = (date.today() - timedelta(days=31)).isoformat()
 
-    all_queries = {}
+    futures = {SHARED_POOL.submit(_fetch_gsc_site_queries, su, start_dt, end_dt, 30): su for su in site_urls}
+    all_rows = [f.result() for f in as_completed(futures)]
+    agg = _aggregate_query_rows(all_rows)
 
-    with ThreadPoolExecutor(max_workers=min(len(site_urls), 6)) as executor:
-        futures = {executor.submit(_fetch_gsc_site_queries, service, su, start_dt, end_dt, 100): su for su in site_urls}
-        for future in as_completed(futures):
-            for r in future.result():
-                q = r["keys"][0]
-                if q not in all_queries:
-                    all_queries[q] = {"query": q, "clicks": 0, "impressions": 0, "position": 0.0, "count": 0}
-                all_queries[q]["clicks"] += int(r["clicks"])
-                all_queries[q]["impressions"] += int(r["impressions"])
-                all_queries[q]["position"] += float(r["position"])
-                all_queries[q]["count"] += 1
+    for q in agg.values():
+        q["position"] = round(q["position"] / q["count"], 1)
+    return sorted(agg.values(), key=lambda x: x["clicks"], reverse=True)[:20]
+
+
+def fetch_gsc_low_ctr_keywords(brand_filter: str = None) -> list:
+    site_urls = get_gsc_site_urls(brand_filter)
+    if not site_urls:
+        return []
+    end_dt = (date.today() - timedelta(days=3)).isoformat()
+    start_dt = (date.today() - timedelta(days=31)).isoformat()
+
+    futures = {SHARED_POOL.submit(_fetch_gsc_site_queries, su, start_dt, end_dt, 100): su for su in site_urls}
+    all_rows = [f.result() for f in as_completed(futures)]
+    agg = _aggregate_query_rows(all_rows)
 
     results = []
-    for q in all_queries.values():
-        clicks = q["clicks"]
+    for q in agg.values():
         impressions = q["impressions"]
-        ctr = round((clicks / impressions) * 100, 2) if impressions > 0 else 0.0
-        q["ctr"] = ctr
+        clicks = q["clicks"]
+        q["ctr"] = round((clicks / impressions) * 100, 2) if impressions > 0 else 0.0
         q["position"] = round(q["position"] / q["count"], 1)
         results.append(q)
 
-    low_ctr_queries = [q for q in results if q["ctr"] < 5.0 and q["impressions"] > 50]
-    return sorted(low_ctr_queries, key=lambda x: x["impressions"], reverse=True)[:50]
+    return sorted(
+        [q for q in results if q["ctr"] < 5.0 and q["impressions"] > 50],
+        key=lambda x: x["impressions"], reverse=True
+    )[:50]
 
 
 # ─── Main Combined Fetch ──────────────────────────────────────────────────────
 
-def fetch_all_data(start_date="30daysAgo", end_date="today", brand_filter: str = None) -> list[dict]:
+def fetch_all_data(start_date="30daysAgo", end_date="today", brand_filter: str = None) -> list:
     """
-    1. Fetch GA4 articles AND GSC data in PARALLEL (they're independent sources)
-    2. Merge GSC into the GA4 articles once both are ready
-    Returns a single unified list — NOT additive.
+    GA4 articles + GSC data fetched in TRUE PARALLEL using the shared pool.
+    No nested ThreadPoolExecutors — one pool does everything.
     """
-    print(f"[Fetch] Date range: {start_date} to {end_date}, Brand: {brand_filter} — parallel mode")
+    print(f"[Fetch] {start_date} → {end_date} | brand={brand_filter}")
 
-    # Run GA4 and GSC fetches simultaneously — they don't depend on each other
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        ga4_future = executor.submit(fetch_articles, start_date, end_date, brand_filter)
-        gsc_future = executor.submit(_prefetch_gsc_map, start_date, end_date, brand_filter)
-
-        articles = ga4_future.result()
-        gsc_map = gsc_future.result()
-
-    articles = _apply_gsc_map(articles, gsc_map)
-    return articles
-
-
-def _prefetch_gsc_map(start_date: str, end_date: str, brand_filter: str) -> dict:
-    """Fetch raw GSC data into a map — runs in parallel with GA4 fetch."""
     site_urls = get_gsc_site_urls(brand_filter)
-    if not site_urls:
-        return {}
+    start_dt = _parse_gsc_date(start_date, 31)
+    end_dt = _parse_gsc_date(end_date, 3)
 
-    credentials = _build_credentials(scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
-    service = build("searchconsole", "v1", credentials=credentials)
+    # Submit GA4 and all GSC site fetches simultaneously to the shared pool
+    prop_ids = _get_property_ids(brand_filter)
+    ga4_futures = {SHARED_POOL.submit(_fetch_articles_for_property, pid, start_date, end_date): ("ga4", pid)
+                   for pid in prop_ids}
+    gsc_futures = {SHARED_POOL.submit(_fetch_gsc_site, su, start_dt, end_dt): ("gsc", su)
+                   for su in site_urls}
+    all_futures = {**ga4_futures, **gsc_futures}
 
-    def parse_gsc_date(d_str, default_days_ago):
-        if not d_str:
-            return (date.today() - timedelta(days=default_days_ago)).isoformat()
-        if d_str == "today":
-            return date.today().isoformat()
-        if d_str.endswith("daysAgo"):
-            try:
-                days = int(d_str.replace("daysAgo", ""))
-                return (date.today() - timedelta(days=days)).isoformat()
-            except:
-                pass
-        return d_str
+    # Collect results as they complete
+    ga4_rows = []
+    gsc_rows_by_site = []
+    for future in as_completed(all_futures):
+        kind, _ = all_futures[future]
+        if kind == "ga4":
+            ga4_rows.extend(future.result())
+        else:
+            gsc_rows_by_site.append(future.result())
 
-    end_dt = parse_gsc_date(end_date, 3)
-    start_dt = parse_gsc_date(start_date, 31)
+    # Assemble articles from GA4 rows
+    global _GLOBAL_URL_MAP
+    seen_urls = {}
+    for row in ga4_rows:
+        url, title, domain, views = row["url"], row["title"], row["domain"], row["pageViews"]
+        _GLOBAL_URL_MAP[title.strip().lower()] = url
+        _GLOBAL_URL_MAP[_path_to_title(url.replace(domain, "")).strip().lower()] = url
+        clean_t = title.split("-")[0].split("|")[0].strip().lower()
+        if clean_t:
+            _GLOBAL_URL_MAP[clean_t] = url
+        if url in seen_urls:
+            if views > seen_urls[url]["pageViews"]:
+                seen_urls[url].update({
+                    "pageViews": views, "users": row["users"], "avgDuration": row["avgDuration"],
+                    "sessions": row["sessions"], "newUsers": row["newUsers"], "brand": row["brand"],
+                })
+            continue
+        seen_urls[url] = {
+            "id": _generate_id(url), "title": title, "url": url, "brand": row["brand"],
+            "pageViews": views, "users": row["users"], "newUsers": row["newUsers"],
+            "sessions": row["sessions"], "avgDuration": row["avgDuration"],
+            "clicks": 0, "impressions": 0, "avgPosition": 0, "ctr": 0,
+        }
+    articles = sorted(seen_urls.values(), key=lambda a: a["pageViews"], reverse=True)
+    print(f"[GA4] {len(articles)} articles from {len(prop_ids)} properties")
+
+    # Build GSC map from collected rows
     gsc_map = {}
+    for rows in gsc_rows_by_site:
+        for row in rows:
+            url = row["keys"][0]
+            parsed = urlparse(url)
+            rel = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+            if rel not in gsc_map:
+                gsc_map[rel] = {
+                    "full_url": url, "clicks": int(row["clicks"]),
+                    "impressions": int(row["impressions"]), "avgPosition": float(row["position"]),
+                    "ctr": float(row["ctr"]), "count": 1,
+                }
+            else:
+                gsc_map[rel]["clicks"] += int(row["clicks"])
+                gsc_map[rel]["impressions"] += int(row["impressions"])
+                gsc_map[rel]["avgPosition"] += float(row["position"])
+                gsc_map[rel]["ctr"] += float(row["ctr"])
+                gsc_map[rel]["count"] += 1
 
-    with ThreadPoolExecutor(max_workers=min(len(site_urls), 6)) as executor:
-        futures = {executor.submit(_fetch_gsc_site, service, su, start_dt, end_dt): su for su in site_urls}
-        for future in as_completed(futures):
-            from urllib.parse import urlparse
-            for row in future.result():
-                url = row["keys"][0]
-                parsed = urlparse(url)
-                relative_url = parsed.path
-                if parsed.query:
-                    relative_url += "?" + parsed.query
-                if relative_url not in gsc_map:
-                    gsc_map[relative_url] = {
-                        "full_url": url, "clicks": int(row["clicks"]),
-                        "impressions": int(row["impressions"]), "avgPosition": float(row["position"]),
-                        "ctr": float(row["ctr"]), "count": 1, "matched": False,
-                    }
-                else:
-                    gsc_map[relative_url]["clicks"] += int(row["clicks"])
-                    gsc_map[relative_url]["impressions"] += int(row["impressions"])
-                    gsc_map[relative_url]["avgPosition"] += float(row["position"])
-                    gsc_map[relative_url]["ctr"] += float(row["ctr"])
-                    gsc_map[relative_url]["count"] += 1
-
-    return gsc_map
-
-
-def _apply_gsc_map(articles: list[dict], gsc_map: dict) -> list[dict]:
-    """Merge a pre-fetched GSC map into articles list."""
-    if not gsc_map:
-        return articles
-
-    from urllib.parse import urlparse
-    matched = 0
-    for article in articles:
-        parsed = urlparse(article["url"])
-        rel_url = parsed.path
-        if parsed.query:
-            rel_url += "?" + parsed.query
-        match_key = article["url"] if article["url"] in gsc_map else (rel_url if rel_url in gsc_map else None)
-        if match_key:
-            data = gsc_map[match_key]
-            article["clicks"] = data["clicks"]
-            article["impressions"] = data["impressions"]
-            article["avgPosition"] = round(data["avgPosition"] / data["count"], 1)
-            article["ctr"] = round((data["ctr"] / data["count"]) * 100, 2)
-            data["matched"] = True
-            matched += 1
-
-    unmatched_count = 0
-    for rel_url, data in gsc_map.items():
-        if not data["matched"]:
-            title = _path_to_title(rel_url)
-            articles.append({
-                "id": _generate_id(data["full_url"]), "title": title, "url": data["full_url"],
-                "brand": "Search Console", "pageViews": 0, "users": 0, "newUsers": 0,
-                "sessions": 0, "avgDuration": 0,
-                "clicks": data["clicks"], "impressions": data["impressions"],
-                "avgPosition": round(data["avgPosition"] / data["count"], 1),
-                "ctr": round((data["ctr"] / data["count"]) * 100, 2),
-            })
-            unmatched_count += 1
-
-    print(f"[GSC] Enriched {matched} articles + {unmatched_count} GSC-only. Total: {len(articles)}")
-    return articles
+    # Enrich GA4 articles only — no GSC-only rows (keeps response lean)
+    return _apply_gsc_map(articles, gsc_map)

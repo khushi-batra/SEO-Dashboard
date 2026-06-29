@@ -6,7 +6,33 @@ import React from "react";
 import { Zap } from "lucide-react";
 import ArticleTable from "../components/ArticleTable";
 
-export default function TopPages({ data }) {
+function TableSkeleton({ rows = 8 }) {
+  return (
+    <div className="rounded-xl border overflow-hidden animate-pulse" style={{ borderColor: "var(--border)" }}>
+      {/* Header */}
+      <div className="grid grid-cols-6 gap-3 px-4 py-3" style={{ background: "var(--bg-tertiary)" }}>
+        {[...Array(6)].map((_, i) => (
+          <div key={i} className="h-3 rounded" style={{ background: "var(--bg-secondary)" }} />
+        ))}
+      </div>
+      {/* Rows */}
+      {[...Array(rows)].map((_, i) => (
+        <div key={i} className="grid grid-cols-6 gap-3 px-4 py-3.5 border-t" style={{ borderColor: "var(--border)" }}>
+          <div className="h-3 w-16 rounded" style={{ background: "var(--bg-tertiary)" }} />
+          <div className="col-span-2 space-y-1.5">
+            <div className="h-3 w-4/5 rounded" style={{ background: "var(--bg-tertiary)" }} />
+            <div className="h-2 w-3/5 rounded" style={{ background: "var(--bg-tertiary)" }} />
+          </div>
+          <div className="h-3 w-12 rounded" style={{ background: "var(--bg-tertiary)" }} />
+          <div className="h-3 w-10 rounded" style={{ background: "var(--bg-tertiary)" }} />
+          <div className="h-3 w-8 rounded" style={{ background: "var(--bg-tertiary)" }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default function TopPages({ data, loading = false }) {
   const columns = [
     {
       key: "pageViews",
@@ -66,7 +92,11 @@ export default function TopPages({ data }) {
           <p className="text-xs" style={{ color: "var(--text-muted)" }}>Sorted by GA4 page views. GSC data shows search performance for the same pages.</p>
         </div>
       </div>
-      <ArticleTable columns={columns} data={data} defaultSort={{ key: "pageViews", direction: "desc" }} />
+      {loading ? (
+        <TableSkeleton rows={10} />
+      ) : (
+        <ArticleTable columns={columns} data={data} defaultSort={{ key: "pageViews", direction: "desc" }} />
+      )}
     </div>
   );
 }

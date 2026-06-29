@@ -13,7 +13,7 @@ To run:
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, Query, BackgroundTasks
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 from ga4_service import (
@@ -40,28 +40,42 @@ app.add_middleware(
 )
 
 # ─── Cache ────────────────────────────────────────────────────────────────────
-_cache = {}
-CACHE_TTL = 3600  # 1 hour TTL for heavy aggregations
-
-
-def _cached_fetch(key: str, fetcher, *args):
-    now = time.time()
-    if key in _cache and (now - _cache[key]["ts"]) < CACHE_TTL:
-        return _cache[key]["data"]
-    data = fetcher(*args)
-    _cache[key] = {"data": data, "ts": now}
-    return data
+_cache: dict = {}
+_cache_in_flight: dict = {}   # key → asyncio.Event, prevents duplicate fetches
+CACHE_TTL = 3600
 
 
 async def _async_cached_fetch(key: str, fetcher, *args):
-    """Non-blocking version — runs fetcher in thread pool so other requests aren't queued."""
+    """
+    Non-blocking cached fetch. If two requests come in simultaneously for the
+    same uncached key, only one runs the fetcher — the other waits for the event.
+    """
     now = time.time()
     if key in _cache and (now - _cache[key]["ts"]) < CACHE_TTL:
         return _cache[key]["data"]
-    loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(_thread_pool, fetcher, *args)
-    _cache[key] = {"data": data, "ts": now}
-    return data
+
+    # If another coroutine is already fetching this key, wait for it
+    if key in _cache_in_flight:
+        await _cache_in_flight[key].wait()
+        # After waiting, the cache should be populated
+        if key in _cache:
+            return _cache[key]["data"]
+
+    # We are the one doing the fetch — set an event so others wait
+    event = asyncio.Event()
+    _cache_in_flight[key] = event
+    try:
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(_thread_pool, fetcher, *args)
+        _cache[key] = {"data": data, "ts": time.time()}
+        return data
+    except Exception as e:
+        print(f"[Cache fetch error] {key}: {e}")
+        raise
+    finally:
+        # Always signal waiters and clean up, even on error
+        event.set()
+        _cache_in_flight.pop(key, None)
 
 
 # ─── Endpoints ─────────────────────────────────────────────────────────────────
@@ -74,17 +88,27 @@ def root():
 @app.on_event("startup")
 async def warm_up_cache():
     """
-    On server start, pre-warm the default 28-day articles cache in the background
-    so the first user to open the dashboard doesn't pay the full cold-start cost.
+    Pre-warm the most-used date ranges in the background so the first request
+    for any of them is instant. Runs concurrently — does not block server startup.
     """
-    async def _warm():
+    async def _warm(cache_key, fetcher, *args):
         try:
-            print("[Startup] Pre-warming 28-day articles cache...")
-            await _async_cached_fetch("articles_28daysAgo_today_all", fetch_all_data, "28daysAgo", "today", None)
-            print("[Startup] Cache warm-up complete.")
+            print(f"[Startup] Warming cache: {cache_key}")
+            await _async_cached_fetch(cache_key, fetcher, *args)
+            print(f"[Startup] Done: {cache_key}")
         except Exception as e:
-            print(f"[Startup] Cache warm-up failed (non-fatal): {e}")
-    asyncio.create_task(_warm())
+            print(f"[Startup] Warm-up failed for {cache_key} (non-fatal): {e}")
+
+    # Articles — three most common date ranges
+    asyncio.create_task(_warm("articles_28daysAgo_today_all", fetch_all_data, "28daysAgo", "today", None))
+    asyncio.create_task(_warm("articles_today_today_all", fetch_all_data, "today", "today", None))
+    asyncio.create_task(_warm("articles_7daysAgo_today_all", fetch_all_data, "7daysAgo", "today", None))
+    # Overview tab — channels, timeline, and GSC queries (always cold without this)
+    asyncio.create_task(_warm("channels_28daysAgo_today_all", fetch_sessions_by_channel, "28daysAgo", "today", None))
+    asyncio.create_task(_warm("timeline_28daysAgo_today_all", fetch_user_activity_timeline, "28daysAgo", "today", None))
+    asyncio.create_task(_warm("gsc_queries_all", fetch_gsc_queries, None))
+    # Low CTR tab
+    asyncio.create_task(_warm("gsc_low_ctr_all", fetch_gsc_low_ctr_keywords, None))
 
 
 @app.get("/api/realtime")
@@ -113,11 +137,16 @@ async def get_realtime_history(brand: Optional[str] = Query(None)):
 async def get_articles(
     date: Optional[str] = Query(None),
     range: Optional[str] = Query(None),
+    startDate: Optional[str] = Query(None),  # custom range start YYYY-MM-DD
+    endDate: Optional[str] = Query(None),    # custom range end YYYY-MM-DD
     brand: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
 ):
     from datetime import date as dt_date
-    if range:
+    if startDate and endDate:
+        # Custom date range from the frontend range picker
+        start, end = startDate, endDate
+    elif range:
         range_map = {"7days": "7daysAgo", "14days": "14daysAgo", "28days": "28daysAgo", "30days": "30daysAgo"}
         start = range_map.get(range, "28daysAgo")
         end = "today"
@@ -168,9 +197,11 @@ async def get_summary(date: Optional[str] = Query(None), range: Optional[str] = 
 
 
 @app.get("/api/channels")
-async def get_channels(date: Optional[str] = Query(None), range: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
+async def get_channels(date: Optional[str] = Query(None), range: Optional[str] = Query(None), startDate: Optional[str] = Query(None), endDate: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
     from datetime import date as dt_date
-    if range:
+    if startDate and endDate:
+        start, end = startDate, endDate
+    elif range:
         range_map = {"7days": "7daysAgo", "14days": "14daysAgo", "28days": "28daysAgo", "30days": "30daysAgo"}
         start = range_map.get(range, "28daysAgo")
         end = "today"
@@ -185,9 +216,11 @@ async def get_channels(date: Optional[str] = Query(None), range: Optional[str] =
 
 
 @app.get("/api/timeline")
-async def get_timeline(date: Optional[str] = Query(None), range: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
+async def get_timeline(date: Optional[str] = Query(None), range: Optional[str] = Query(None), startDate: Optional[str] = Query(None), endDate: Optional[str] = Query(None), brand: Optional[str] = Query(None)):
     from datetime import date as dt_date
-    if range:
+    if startDate and endDate:
+        start, end = startDate, endDate
+    elif range:
         range_map = {"7days": "7daysAgo", "14days": "14daysAgo", "28days": "28daysAgo", "30days": "30daysAgo"}
         start = range_map.get(range, "28daysAgo")
         end = "today"

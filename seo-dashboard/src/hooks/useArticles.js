@@ -12,18 +12,24 @@ export function useArticles(dateOrRange, brand = "all") {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     let url = `${API_BASE}/api/articles?`;
-    if (dateOrRange === "7days" || dateOrRange === "14days" || dateOrRange === "28days" || dateOrRange === "30days") {
-        url += `range=${dateOrRange}`;
+
+    if (["7days", "14days", "28days", "30days"].includes(dateOrRange)) {
+      url += `range=${dateOrRange}`;
+    } else if (dateOrRange?.startsWith("custom:")) {
+      // custom:2025-01-01:2025-01-15
+      const [, start, end] = dateOrRange.split(":");
+      url += `startDate=${start}&endDate=${end}`;
     } else {
-        url += `date=${dateOrRange}`;
+      // single YYYY-MM-DD
+      url += `date=${dateOrRange}`;
     }
+
     if (brand && brand !== "all") {
-        url += `&brand=${encodeURIComponent(brand)}`;
+      url += `&brand=${encodeURIComponent(brand)}`;
     }
-    
+
     fetch(url)
       .then((r) => r.json())
       .then((d) => setArticles(d.articles || []))
@@ -108,22 +114,27 @@ export function useRealtime(brand = "all", isActive = true) {
   return { realtime: safeRealtime, refresh, loading, refreshing };
 }
 
-export function useOverviewData(brand, range) {
+export function useOverviewData(brand, range, isActive = true) {
   const [data, setData] = useState({ channels: [], timeline: [], queries: [] });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!isActive) return; // defer until overview tab is visible
+
     setLoading(true);
     let q = `?brand=${encodeURIComponent(brand || 'all')}`;
-    if (range === "7days" || range === "14days" || range === "28days" || range === "30days") {
+
+    if (["7days", "14days", "28days", "30days"].includes(range)) {
       q += `&range=${encodeURIComponent(range)}`;
+    } else if (range?.startsWith("custom:")) {
+      const [, start, end] = range.split(":");
+      q += `&startDate=${start}&endDate=${end}`;
     } else if (range) {
       q += `&date=${encodeURIComponent(range)}`;
     } else {
       q += `&range=28days`;
     }
-    
+
     Promise.all([
       fetch(`${API_BASE}/api/channels${q}`).then(r => r.json()),
       fetch(`${API_BASE}/api/timeline${q}`).then(r => r.json()),
@@ -132,26 +143,27 @@ export function useOverviewData(brand, range) {
       setData({ channels, timeline, queries });
     }).catch(() => {})
       .finally(() => setLoading(false));
-  }, [brand, range]);
+  }, [brand, range, isActive]);
 
   return { ...data, loading };
 }
 
-export function useLowCTRData(brand) {
+export function useLowCTRData(brand, isActive = true) {
   const [keywords, setKeywords] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!isActive) return; // defer until low-ctr tab is visible
+
     setLoading(true);
     let q = `?brand=${encodeURIComponent(brand || 'all')}`;
-    
+
     fetch(`${API_BASE}/api/gsc/low-ctr-keywords${q}`)
       .then(r => r.json())
       .then(data => setKeywords(data))
       .catch(() => setKeywords([]))
       .finally(() => setLoading(false));
-  }, [brand]);
+  }, [brand, isActive]);
 
   return { keywords, loading };
 }
