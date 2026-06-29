@@ -10,6 +10,7 @@ To run:
     python3 app.py
 """
 
+import os
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -31,9 +32,15 @@ app = FastAPI(title="Adda247 SEO Matrix API", version="3.0.0")
 # Thread pool for running blocking GA4/GSC calls without blocking the event loop
 _thread_pool = ThreadPoolExecutor(max_workers=20)
 
+_raw_origins = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174",
+)
+_cors_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "http://127.0.0.1:5174"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -271,4 +278,4 @@ def clear_cache():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)

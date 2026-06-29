@@ -180,6 +180,7 @@ def _parse_gsc_date(d_str, default_days_ago):
 # ─── Realtime ─────────────────────────────────────────────────────────────────
 
 _GLOBAL_URL_MAP: dict = {}
+_url_map_lock = threading.Lock()
 
 
 def _fetch_realtime_total(prop_id: str) -> int:
@@ -242,7 +243,9 @@ def _fetch_realtime_pages(prop_id: str) -> list:
                     clean = t.split("-")[0].split("|")[0].strip().lower()
                     if clean:
                         local_map[clean] = full_url
-                    _GLOBAL_URL_MAP[t.strip().lower()] = full_url
+            with _url_map_lock:
+                _GLOBAL_URL_MAP.update(local_map)
+            extra = {}
             for p in pages:
                 if not p["url"]:
                     key = p["title"].strip().lower()
@@ -251,7 +254,10 @@ def _fetch_realtime_pages(prop_id: str) -> list:
                         clean = p["title"].split("-")[0].split("|")[0].strip().lower()
                         p["url"] = local_map.get(clean, "")
                     if p["url"]:
-                        _GLOBAL_URL_MAP[key] = p["url"]
+                        extra[key] = p["url"]
+            if extra:
+                with _url_map_lock:
+                    _GLOBAL_URL_MAP.update(extra)
     except Exception as e:
         print(f"[Realtime Pages Error] {prop_id}: {e}")
     return pages
@@ -363,19 +369,19 @@ def _fetch_articles_for_property(prop_id: str, start_date: str, end_date: str) -
 
 
 def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today", brand_filter: str = None) -> list:
-    global _GLOBAL_URL_MAP
     prop_ids = _get_property_ids(brand_filter)
     seen_urls = {}
 
     futures = {SHARED_POOL.submit(_fetch_articles_for_property, pid, start_date, end_date): pid for pid in prop_ids}
     for future in as_completed(futures):
+        url_entries = {}
         for row in future.result():
             url, title, domain, views = row["url"], row["title"], row["domain"], row["pageViews"]
-            _GLOBAL_URL_MAP[title.strip().lower()] = url
-            _GLOBAL_URL_MAP[_path_to_title(url.replace(domain, "")).strip().lower()] = url
+            url_entries[title.strip().lower()] = url
+            url_entries[_path_to_title(url.replace(domain, "")).strip().lower()] = url
             clean_t = title.split("-")[0].split("|")[0].strip().lower()
             if clean_t:
-                _GLOBAL_URL_MAP[clean_t] = url
+                url_entries[clean_t] = url
             if url in seen_urls:
                 if views > seen_urls[url]["pageViews"]:
                     seen_urls[url].update({
@@ -389,6 +395,8 @@ def fetch_articles(start_date: str = "30daysAgo", end_date: str = "today", brand
                 "sessions": row["sessions"], "avgDuration": row["avgDuration"],
                 "clicks": 0, "impressions": 0, "avgPosition": 0, "ctr": 0,
             }
+        with _url_map_lock:
+            _GLOBAL_URL_MAP.update(url_entries)
 
     articles = sorted(seen_urls.values(), key=lambda a: a["pageViews"], reverse=True)
     print(f"[GA4] {len(articles)} articles from {len(prop_ids)} properties (parallel)")
@@ -658,15 +666,15 @@ def fetch_all_data(start_date="30daysAgo", end_date="today", brand_filter: str =
             gsc_rows_by_site.append(future.result())
 
     # Assemble articles from GA4 rows
-    global _GLOBAL_URL_MAP
     seen_urls = {}
+    url_entries = {}
     for row in ga4_rows:
         url, title, domain, views = row["url"], row["title"], row["domain"], row["pageViews"]
-        _GLOBAL_URL_MAP[title.strip().lower()] = url
-        _GLOBAL_URL_MAP[_path_to_title(url.replace(domain, "")).strip().lower()] = url
+        url_entries[title.strip().lower()] = url
+        url_entries[_path_to_title(url.replace(domain, "")).strip().lower()] = url
         clean_t = title.split("-")[0].split("|")[0].strip().lower()
         if clean_t:
-            _GLOBAL_URL_MAP[clean_t] = url
+            url_entries[clean_t] = url
         if url in seen_urls:
             if views > seen_urls[url]["pageViews"]:
                 seen_urls[url].update({
@@ -680,6 +688,8 @@ def fetch_all_data(start_date="30daysAgo", end_date="today", brand_filter: str =
             "sessions": row["sessions"], "avgDuration": row["avgDuration"],
             "clicks": 0, "impressions": 0, "avgPosition": 0, "ctr": 0,
         }
+    with _url_map_lock:
+        _GLOBAL_URL_MAP.update(url_entries)
     articles = sorted(seen_urls.values(), key=lambda a: a["pageViews"], reverse=True)
     print(f"[GA4] {len(articles)} articles from {len(prop_ids)} properties")
 
