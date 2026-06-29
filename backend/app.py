@@ -7,7 +7,7 @@ GA4 = article inventory + traffic metrics (what happens on site)
 GSC = search enrichment (how Google sees those same pages)
 
 To run:
-    uvicorn main:app --reload --port 8000
+    python3 app.py
 """
 
 import time
@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
-from ga4_service import (
+from services.ga4_service import (
     fetch_all_data,
     fetch_realtime_data,
     fetch_realtime_per_minute,
@@ -243,3 +243,8 @@ async def get_gsc_low_ctr_keywords(brand: Optional[str] = Query(None)):
 def clear_cache():
     _cache.clear()
     return {"status": "cleared"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

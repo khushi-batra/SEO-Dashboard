@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cd backend
 pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+python3 app.py
 ```
 
 ### Frontend (React / Vite)
@@ -21,7 +21,7 @@ npm run lint       # eslint
 npm run preview    # preview production build
 ```
 
-There are no automated tests. Debug/validation scripts live in `backend/test_*.py` and root-level `gsc_debug.py` / `debug_gsc_enrich.py` — run them directly with `python <file>`.
+There are no automated tests. All debug/validation scripts live in `backend/scripts/` — run them with `python backend/scripts/<name>.py` from the repo root.
 
 ## File map
 
@@ -29,15 +29,32 @@ There are no automated tests. Debug/validation scripts live in `backend/test_*.p
 
 | File | Provides |
 |------|----------|
-| `main.py` | FastAPI app entry point. All 9 REST endpoints (`/api/articles`, `/api/realtime`, `/api/realtime/history`, `/api/metrics/summary`, `/api/channels`, `/api/timeline`, `/api/gsc/queries`, `/api/gsc/low-ctr-keywords`, `/api/cache/clear`). In-memory cache with TTL + in-flight deduplication. Startup cache warmup. |
-| `ga4_service.py` | Entire data engine. GA4 client singleton, thread-local GSC service, shared `SHARED_POOL` (24-worker ThreadPoolExecutor). All fetch functions: `fetch_all_data`, `fetch_realtime_data`, `fetch_realtime_per_minute`, `fetch_sessions_by_channel`, `fetch_user_activity_timeline`, `fetch_gsc_queries`, `fetch_gsc_low_ctr_keywords`. Property/brand/domain maps. |
-| `data.py` | 30-article mock dataset — fallback for local dev without credentials. |
+| `app.py` | FastAPI app entry point. All 9 REST endpoints (`/api/articles`, `/api/realtime`, `/api/realtime/history`, `/api/metrics/summary`, `/api/channels`, `/api/timeline`, `/api/gsc/queries`, `/api/gsc/low-ctr-keywords`, `/api/cache/clear`). In-memory cache with TTL + in-flight deduplication. Startup cache warmup. |
 | `requirements.txt` | Python dependencies (fastapi, uvicorn, google-analytics-data, google-analytics-admin, google-api-python-client, google-auth, python-dotenv). |
-| `fetch_top_pages.py` | CLI utility — fetches top pages from a single GA4 property for debugging. |
-| `check_ga4_access.py` | CLI utility — verifies service account has correct GA4 access. |
-| `fetch_data.py` | Data aggregation helpers (used by test scripts). |
-| `get_realtime_meta.py` | Metadata helpers for realtime page resolution. |
-| `test_*.py` | One-off debug scripts — not a test suite. Run individually with `python backend/test_<name>.py`. |
+
+**`backend/services/`** — core data engine (imported by `main.py`)
+
+| File | Provides |
+|------|----------|
+| `services/ga4_service.py` | Entire data engine. GA4 client singleton, thread-local GSC service, shared `SHARED_POOL` (24-worker ThreadPoolExecutor). All fetch functions: `fetch_all_data`, `fetch_realtime_data`, `fetch_realtime_per_minute`, `fetch_sessions_by_channel`, `fetch_user_activity_timeline`, `fetch_gsc_queries`, `fetch_gsc_low_ctr_keywords`. Property/brand/domain maps. |
+
+**`backend/utils/`** — standalone helpers (not imported by main app)
+
+| File | Provides |
+|------|----------|
+| `utils/data.py` | 30-article mock dataset — fallback for local dev without credentials. |
+| `utils/fetch_data.py` | Data aggregation helpers used by debug scripts. |
+| `utils/fetch_top_pages.py` | CLI utility — fetches top pages from a single GA4 property. |
+| `utils/check_ga4_access.py` | CLI utility — verifies service account has correct GA4 access. |
+| `utils/get_realtime_meta.py` | Metadata helpers for realtime page resolution. |
+
+**`backend/scripts/`** — one-off debug/test scripts (run with `python backend/scripts/<name>.py`)
+
+| File | Provides |
+|------|----------|
+| `scripts/gsc_debug.py` | GSC API debugging — inspect raw search console data. |
+| `scripts/debug_gsc_enrich.py` | Debug GA4↔GSC URL matching and enrichment. |
+| `scripts/test_*.py` | Ad-hoc verification scripts: `test_dimensions`, `test_fallback`, `test_filter`, `test_ga4`, `test_inlist`, `test_low_ctr`, `test_match`, `test_realtime`, `test_rt`, `test_today`, `test_verify_realtime`. |
 
 ### Frontend (`frontend/`)
 
@@ -66,15 +83,6 @@ There are no automated tests. Debug/validation scripts live in `backend/test_*.p
 | `vite.config.js` | Vite config — port 5174, `strictPort: true`. |
 | `eslint.config.js` | ESLint rules (react-hooks, react-refresh). |
 
-### Root-level debug scripts
-
-| File | Provides |
-|------|----------|
-| `gsc_debug.py` | GSC API debugging — inspect raw search console data. |
-| `debug_gsc_enrich.py` | Debug GA4↔GSC URL matching and enrichment. |
-| `test_ga4.py` | Verify GA4 API connectivity and response shape. |
-| `test_match.py` | Test URL path matching logic between GA4 and GSC. |
-
 ## Architecture
 
 ### Monorepo structure
@@ -90,7 +98,7 @@ All data originates from two Google APIs:
 - **GA4** — article inventory, page views, users, session duration, channels, realtime active users
 - **GSC** — clicks, impressions, position, CTR for the same articles
 
-`ga4_service.py` is the entire data engine. `main.py` is thin routing + caching on top of it.
+`services/ga4_service.py` is the entire data engine. `main.py` is thin routing + caching on top of it.
 
 **Article enrichment flow:**
 1. `fetch_all_data(start, end, brand)` — called for every `/api/articles` request
