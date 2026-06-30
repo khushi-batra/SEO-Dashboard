@@ -1,28 +1,46 @@
 /**
  * Data hooks — fetch from Python backend.
- * useArticles accepts a date string (YYYY-MM-DD) for the selected day.
- * useRealtime fetches live active users (auto-refreshes).
+ * Module-level caches let every request run to completion in the background.
+ * Switching blogs/ranges fires a new request immediately; completed background
+ * results are cached silently and only applied when that key is active again.
  */
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
+// Module-level caches — persist for the lifetime of the page
+const _articlesCache = new Map();
+const _overviewCache = new Map();
+const _lowCtrCache = new Map();
+
 export function useArticles(dateOrRange, brand = "all") {
-  const [articles, setArticles] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = `${dateOrRange}_${brand}`;
+  const [articles, setArticles] = useState(() => _articlesCache.get(cacheKey) || []);
+  const [loading, setLoading] = useState(!_articlesCache.has(cacheKey));
+
+  // Tracks which key is currently displayed — background completions check this
+  // before updating state so stale results never overwrite the active view
+  const activeKeyRef = useRef(cacheKey);
+  activeKeyRef.current = cacheKey;
 
   useEffect(() => {
+    const key = `${dateOrRange}_${brand}`;
+
+    if (_articlesCache.has(key)) {
+      setArticles(_articlesCache.get(key));
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     let url = `${API_BASE}/api/articles?`;
 
     if (["7days", "14days", "28days", "30days"].includes(dateOrRange)) {
       url += `range=${dateOrRange}`;
     } else if (dateOrRange?.startsWith("custom:")) {
-      // custom:2025-01-01:2025-01-15
       const [, start, end] = dateOrRange.split(":");
       url += `startDate=${start}&endDate=${end}`;
     } else {
-      // single YYYY-MM-DD
       url += `date=${dateOrRange}`;
     }
 
@@ -32,24 +50,33 @@ export function useArticles(dateOrRange, brand = "all") {
 
     fetch(url)
       .then((r) => r.json())
-      .then((d) => setArticles(d.articles || []))
-      .catch(() => setArticles([]))
-      .finally(() => setLoading(false));
+      .then((d) => {
+        const data = d.articles || [];
+        _articlesCache.set(key, data);
+        if (activeKeyRef.current === key) {
+          setArticles(data);
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (activeKeyRef.current === key) {
+          setArticles([]);
+          setLoading(false);
+        }
+      });
   }, [dateOrRange, brand]);
 
   return { articles, loading };
 }
 
 export function useRealtime(brand = "all", isActive = true) {
-  const [realtime, setRealtime] = useState(null); // null = never fetched yet
+  const [realtime, setRealtime] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false); // true only during manual refresh
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Keep a ref to the latest brand so manual refresh always uses current value
-  const brandRef = React.useRef(brand);
+  const brandRef = useRef(brand);
   brandRef.current = brand;
 
-  // Manual refresh — shows spinner, updates data, no skeleton (data already visible)
   const refresh = useCallback(async () => {
     setRefreshing(true);
     let url = `${API_BASE}/api/realtime`;
@@ -68,8 +95,6 @@ export function useRealtime(brand = "all", isActive = true) {
   }, []);
 
   useEffect(() => {
-    // Reset to null + loading on brand change — null means "no data yet for this brand"
-    // so skeleton stays visible until real data arrives
     setRealtime(null);
     setLoading(true);
 
@@ -83,46 +108,57 @@ export function useRealtime(brand = "all", isActive = true) {
       try {
         const r = await fetch(url, { signal: controller.signal });
         const data = await r.json();
-        setRealtime(data);         // set real data first
-        setLoading(false);         // then clear loading — no 0-flash possible
+        setRealtime(data);
+        setLoading(false);
       } catch (err) {
         if (err.name !== "AbortError") {
           console.warn("[useRealtime]", err);
-          if (isFirst) setLoading(false); // only unblock on error for initial fetch
+          if (isFirst) setLoading(false);
         }
       }
     };
 
     fetchData(true);
 
-    // Only poll while the realtime tab is visible — saves tokens when user is on other tabs
     if (!isActive) {
       return () => controller.abort();
     }
 
-    // 55-second interval — one brand, one active fetch, low token cost
     const interval = setInterval(() => fetchData(false), 55000);
 
     return () => {
       clearInterval(interval);
-      controller.abort(); // cancel any in-flight fetch for the old brand
+      controller.abort();
     };
   }, [brand, isActive]);
 
-  // Expose safe defaults — consumers must check `loading` before rendering numbers
   const safeRealtime = realtime ?? { totalActive: 0, pages: [] };
   return { realtime: safeRealtime, refresh, loading, refreshing };
 }
 
 export function useOverviewData(brand, range, isActive = true) {
-  const [data, setData] = useState({ channels: [], timeline: [], queries: [] });
-  const [loading, setLoading] = useState(true);
+  const cacheKey = `${brand}_${range}`;
+  const [data, setData] = useState(
+    () => _overviewCache.get(cacheKey) || { channels: [], timeline: [], queries: [] }
+  );
+  const [loading, setLoading] = useState(!_overviewCache.has(cacheKey));
+
+  const activeKeyRef = useRef(cacheKey);
+  activeKeyRef.current = cacheKey;
 
   useEffect(() => {
-    if (!isActive) return; // defer until overview tab is visible
+    if (!isActive) return;
+
+    const key = `${brand}_${range}`;
+
+    if (_overviewCache.has(key)) {
+      setData(_overviewCache.get(key));
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
-    let q = `?brand=${encodeURIComponent(brand || 'all')}`;
+    let q = `?brand=${encodeURIComponent(brand || "all")}`;
 
     if (["7days", "14days", "28days", "30days"].includes(range)) {
       q += `&range=${encodeURIComponent(range)}`;
@@ -136,27 +172,47 @@ export function useOverviewData(brand, range, isActive = true) {
     }
 
     Promise.all([
-      fetch(`${API_BASE}/api/channels${q}`).then(r => r.json()),
-      fetch(`${API_BASE}/api/timeline${q}`).then(r => r.json()),
-      fetch(`${API_BASE}/api/gsc/queries${q}`).then(r => r.json())
-    ]).then(([channels, timeline, queries]) => {
-      setData({ channels, timeline, queries });
-    }).catch(() => {})
-      .finally(() => setLoading(false));
+      fetch(`${API_BASE}/api/channels${q}`).then((r) => r.json()),
+      fetch(`${API_BASE}/api/timeline${q}`).then((r) => r.json()),
+      fetch(`${API_BASE}/api/gsc/queries${q}`).then((r) => r.json()),
+    ])
+      .then(([channels, timeline, queries]) => {
+        const result = { channels, timeline, queries };
+        _overviewCache.set(key, result);
+        if (activeKeyRef.current === key) {
+          setData(result);
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (activeKeyRef.current === key) setLoading(false);
+      });
   }, [brand, range, isActive]);
 
   return { ...data, loading };
 }
 
 export function useLowCTRData(brand, range, isActive = true) {
-  const [keywords, setKeywords] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = `${brand}_${range}`;
+  const [keywords, setKeywords] = useState(() => _lowCtrCache.get(cacheKey) || []);
+  const [loading, setLoading] = useState(!_lowCtrCache.has(cacheKey));
+
+  const activeKeyRef = useRef(cacheKey);
+  activeKeyRef.current = cacheKey;
 
   useEffect(() => {
-    if (!isActive) return; // defer until low-ctr tab is visible
+    if (!isActive) return;
+
+    const key = `${brand}_${range}`;
+
+    if (_lowCtrCache.has(key)) {
+      setKeywords(_lowCtrCache.get(key));
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
-    let q = `?brand=${encodeURIComponent(brand || 'all')}`;
+    let q = `?brand=${encodeURIComponent(brand || "all")}`;
 
     if (["7days", "14days", "28days", "30days"].includes(range)) {
       q += `&range=${encodeURIComponent(range)}`;
@@ -166,10 +222,20 @@ export function useLowCTRData(brand, range, isActive = true) {
     }
 
     fetch(`${API_BASE}/api/gsc/low-ctr-keywords${q}`)
-      .then(r => r.json())
-      .then(data => setKeywords(data))
-      .catch(() => setKeywords([]))
-      .finally(() => setLoading(false));
+      .then((r) => r.json())
+      .then((data) => {
+        _lowCtrCache.set(key, data);
+        if (activeKeyRef.current === key) {
+          setKeywords(data);
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (activeKeyRef.current === key) {
+          setKeywords([]);
+          setLoading(false);
+        }
+      });
   }, [brand, range, isActive]);
 
   return { keywords, loading };

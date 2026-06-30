@@ -134,8 +134,7 @@ def get_gsc_site_urls(brand_filter: str = None) -> list:
                 if brand_filter.lower() in brands_for_url:
                     urls.append(url)
             else:
-                if "studyiq.com" not in url:
-                    urls.append(url)
+                urls.append(url)
     return urls
 
 
@@ -145,7 +144,7 @@ def _get_property_ids(brand_filter: str = None) -> list:
     if not brand_filter or brand_filter.lower() == "all":
         return [p for p in all_props if p not in ("314016871", "292607808")]
     matched = [p for p in all_props if PROPERTY_BRANDS.get(p, "").lower() == brand_filter.lower()]
-    return matched if matched else all_props
+    return matched  # empty list for unknown brand — never fall back to all properties
 
 
 def _generate_id(url: str) -> str:
@@ -176,6 +175,20 @@ def _parse_gsc_date(d_str, default_days_ago):
         except Exception:
             pass
     return d_str
+
+
+def _gsc_end_date(d_str, lag_days: int = 3) -> str:
+    """GSC has a ~3-day data lag. Clamp end date so we never query empty recent days."""
+    resolved = _parse_gsc_date(d_str, lag_days)
+    latest = (date.today() - timedelta(days=lag_days)).isoformat()
+    return min(resolved, latest)
+
+
+def _normalize_path(path: str) -> str:
+    """Strip trailing slash for consistent GA4↔GSC path matching.
+    Keeps bare '/' intact so the homepage is never converted to ''."""
+    stripped = path.rstrip("/")
+    return stripped if stripped else "/"
 
 
 # ─── Realtime ─────────────────────────────────────────────────────────────────
@@ -437,7 +450,7 @@ def _build_gsc_map(site_urls: list, start_dt: str, end_dt: str) -> dict:
         for row in future.result():
             url = row["keys"][0]
             parsed = urlparse(url)
-            rel = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+            rel = _normalize_path(parsed.path) + (f"?{parsed.query}" if parsed.query else "")
             if rel not in gsc_map:
                 gsc_map[rel] = {
                     "full_url": url, "clicks": int(row["clicks"]),
@@ -461,7 +474,7 @@ def _apply_gsc_map(articles: list, gsc_map: dict) -> list:
     matched = 0
     for article in articles:
         parsed = urlparse(article["url"])
-        rel = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        rel = _normalize_path(parsed.path) + (f"?{parsed.query}" if parsed.query else "")
         key = article["url"] if article["url"] in gsc_map else (rel if rel in gsc_map else None)
         if key:
             d = gsc_map[key]
@@ -481,7 +494,7 @@ def enrich_with_gsc(articles: list, start_date: str = None, end_date: str = None
     if not site_urls:
         return articles
     start_dt = _parse_gsc_date(start_date, 31)
-    end_dt = _parse_gsc_date(end_date, 3)
+    end_dt = _gsc_end_date(end_date)
     gsc_map = _build_gsc_map(site_urls, start_dt, end_dt)
     return _apply_gsc_map(articles, gsc_map)  # no GSC-only rows appended
 
@@ -579,7 +592,7 @@ def fetch_gsc_queries(brand_filter: str = None, start_date: str = None, end_date
     if not site_urls:
         return []
     start_dt = _parse_gsc_date(start_date, 31)
-    end_dt = _parse_gsc_date(end_date, 3)
+    end_dt = _gsc_end_date(end_date)
 
     futures = {SHARED_POOL.submit(_fetch_gsc_site_queries, su, start_dt, end_dt, 30): su for su in site_urls}
     all_rows = [f.result() for f in as_completed(futures)]
@@ -595,7 +608,7 @@ def fetch_gsc_low_ctr_keywords(brand_filter: str = None, start_date: str = None,
     if not site_urls:
         return []
     start_dt = _parse_gsc_date(start_date, 31)
-    end_dt = _parse_gsc_date(end_date, 3)
+    end_dt = _gsc_end_date(end_date)
 
     futures = {SHARED_POOL.submit(_fetch_gsc_site_queries, su, start_dt, end_dt, 100): su for su in site_urls}
     all_rows = [f.result() for f in as_completed(futures)]
@@ -626,7 +639,7 @@ def fetch_all_data(start_date="30daysAgo", end_date="today", brand_filter: str =
 
     site_urls = get_gsc_site_urls(brand_filter)
     start_dt = _parse_gsc_date(start_date, 31)
-    end_dt = _parse_gsc_date(end_date, 3)
+    end_dt = _gsc_end_date(end_date)
 
     # Submit GA4 and all GSC site fetches simultaneously to the shared pool
     prop_ids = _get_property_ids(brand_filter)
@@ -679,7 +692,7 @@ def fetch_all_data(start_date="30daysAgo", end_date="today", brand_filter: str =
         for row in rows:
             url = row["keys"][0]
             parsed = urlparse(url)
-            rel = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+            rel = _normalize_path(parsed.path) + (f"?{parsed.query}" if parsed.query else "")
             if rel not in gsc_map:
                 gsc_map[rel] = {
                     "full_url": url, "clicks": int(row["clicks"]),

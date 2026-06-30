@@ -88,9 +88,11 @@ export default function DashboardLayout() {
   }, [dateRange, customStart, customEnd]);
   
   const activeBrandString = activeBlog === "all" ? "all" : (blogBrandMap[activeBlog]?.[0] || "all");
-  
-  // Always fetch 'all' articles so local filtering is instantaneous when switching blogs
-  const { articles, loading: articlesLoading } = useArticles(fetchParam, "all");
+
+  // Fetch articles for the active brand — brand-specific call ensures accurate GA4 + GSC data
+  // per blog (incl. brands excluded from the "all" aggregate, e.g. StudyIQ Mains).
+  // Module-level cache in useArticles makes repeat visits instant with no extra API call.
+  const { articles, loading: articlesLoading } = useArticles(fetchParam, activeBrandString);
   const { realtime, refresh: refreshRealtime, loading: realtimeLoading, refreshing: realtimeRefreshing } = useRealtime(activeBrandString, activeTab === "realtime");
   const overviewData = useOverviewData(activeBrandString, fetchParam, activeTab === "overview");
   const lowCtrData = useLowCTRData(activeBrandString, fetchParam, activeTab === "low-ctr");
@@ -99,30 +101,19 @@ export default function DashboardLayout() {
 
   const handleRealtimeRefresh = React.useCallback(async () => {
     await refreshRealtime();
-    setChartRefreshKey(k => k + 1); // also re-fetch the area chart
+    setChartRefreshKey(k => k + 1);
   }, [refreshRealtime]);
 
   const goToRealtime = () => setActiveTab("realtime");
 
-  const blogFilteredData = useMemo(() => {
-    if (activeBlog === "all") return articles;
-    const keywords = blogBrandMap[activeBlog] || [];
-    return articles.filter((a) =>
-      keywords.some((kw) =>
-        (a.brand || "").toLowerCase().includes(kw.toLowerCase()) ||
-        (a.url || "").toLowerCase().includes(kw.toLowerCase())
-      )
-    );
-  }, [articles, activeBlog]);
-
-  // Global search
+  // Global search — articles are already brand-filtered by the API
   const filteredData = useMemo(() => {
-    if (!searchQuery.trim()) return blogFilteredData;
+    if (!searchQuery.trim()) return articles;
     const q = searchQuery.toLowerCase();
-    return blogFilteredData.filter(
+    return articles.filter(
       (a) => a.title.toLowerCase().includes(q) || a.url.toLowerCase().includes(q)
     );
-  }, [searchQuery, blogFilteredData]);
+  }, [searchQuery, articles]);
 
   const renderView = () => {
     switch (activeTab) {
