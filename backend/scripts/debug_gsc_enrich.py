@@ -1,5 +1,6 @@
-import sys
-from backend.ga4_service import fetch_all_data
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from services.ga4_service import fetch_all_data
 
 articles = fetch_all_data("7daysAgo", "today", "Adda Exams")
 print(f"Fetched {len(articles)} articles for Adda Exams")

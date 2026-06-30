@@ -5,7 +5,7 @@
  */
 import React, { useState, useEffect, useCallback } from "react";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 export function useArticles(dateOrRange, brand = "all") {
   const [articles, setArticles] = useState([]);
@@ -138,7 +138,7 @@ export function useOverviewData(brand, range, isActive = true) {
     Promise.all([
       fetch(`${API_BASE}/api/channels${q}`).then(r => r.json()),
       fetch(`${API_BASE}/api/timeline${q}`).then(r => r.json()),
-      fetch(`${API_BASE}/api/gsc/queries`).then(r => r.json())
+      fetch(`${API_BASE}/api/gsc/queries${q}`).then(r => r.json())
     ]).then(([channels, timeline, queries]) => {
       setData({ channels, timeline, queries });
     }).catch(() => {})
@@ -148,7 +148,7 @@ export function useOverviewData(brand, range, isActive = true) {
   return { ...data, loading };
 }
 
-export function useLowCTRData(brand, isActive = true) {
+export function useLowCTRData(brand, range, isActive = true) {
   const [keywords, setKeywords] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -158,12 +158,19 @@ export function useLowCTRData(brand, isActive = true) {
     setLoading(true);
     let q = `?brand=${encodeURIComponent(brand || 'all')}`;
 
+    if (["7days", "14days", "28days", "30days"].includes(range)) {
+      q += `&range=${encodeURIComponent(range)}`;
+    } else if (range?.startsWith("custom:")) {
+      const [, start, end] = range.split(":");
+      q += `&startDate=${start}&endDate=${end}`;
+    }
+
     fetch(`${API_BASE}/api/gsc/low-ctr-keywords${q}`)
       .then(r => r.json())
       .then(data => setKeywords(data))
       .catch(() => setKeywords([]))
       .finally(() => setLoading(false));
-  }, [brand, isActive]);
+  }, [brand, range, isActive]);
 
   return { keywords, loading };
 }
